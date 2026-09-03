@@ -1,0 +1,24 @@
+# Configurazione reale (versionata solo nel mirror privato)
+config.php
+
+# Database e dati locali
+*.db
+*.db-shm
+*.db-wal
+/data/
+/devdata/
+attachments/
+logs/
+
+# Bot: ambiente e segreti
+bot/.env
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Sviluppo
+DEV.md
+
+# Sistema
+.DS_Store

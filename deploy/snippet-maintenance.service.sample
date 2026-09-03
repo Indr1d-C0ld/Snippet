@@ -1,0 +1,12 @@
+[Unit]
+Description=snippet - manutenzione (ricostruzione grafo correlazioni)
+After=network.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+# Adatta il percorso all'installazione. `bin/` sta accanto ai file della
+# webapp (protetto da .htaccess + guard PHP_SAPI).
+ExecStart=/usr/bin/php /var/www/html/snippet/bin/snippet_maintenance.php --graph
+WorkingDirectory=/var/www/html/snippet

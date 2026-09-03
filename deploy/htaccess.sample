@@ -1,0 +1,54 @@
+# snippet - Apache. Copiare come `.htaccess` nella document root della webapp.
+# L'accesso e' controllato dall'applicazione (tabella users + login.php):
+# nessuna Basic Auth.
+
+# --- Nega accesso HTTP diretto a config, database, dump e include privati ----
+<FilesMatch "\.(sql|db|db-wal|db-shm|sqlite|sqlite3)$">
+  Require all denied
+</FilesMatch>
+<Files "config.php">
+  Require all denied
+</Files>
+# gli endpoint api/_*.php sono solo include, mai richiesti direttamente
+<FilesMatch "^_.*\.php$">
+  Require all denied
+</FilesMatch>
+
+# Script CLI e materiale di deploy: mai serviti via HTTP.
+# (bin/*.php hanno anche un guard PHP_SAPI; questo e' il primo livello.)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^(bin|deploy)/ - [F,L]
+</IfModule>
+
+# --- Header di sicurezza + CSP -------------------------------------------------
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "same-origin"
+  # CSP: tutto da 'self'. 'unsafe-inline' resta per gli handler onclick/onsubmit
+  # e gli attributi style= inline usati nei template; niente risorse esterne.
+  Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'; form-action 'self'"
+</IfModule>
+
+# --- Passa l'header Authorization a PHP (serve ad api/ per il bearer token) ----
+<IfModule mod_setenvif.c>
+  SetEnvIf Authorization "(.+)" HTTP_AUTHORIZATION=$1
+</IfModule>
+# In alternativa, se si usa CGI/FPM: CGIPassAuth On
+
+# --- Service worker: deve poter controllare l'intero scope della webapp -------
+<IfModule mod_headers.c>
+  <Files "sw.js">
+    Header set Service-Worker-Allowed "/"
+    Header set Cache-Control "no-cache"
+  </Files>
+</IfModule>
+
+# --- MIME per il manifest (qui e' servito da manifest.php, ma per sicurezza) --
+<IfModule mod_mime.c>
+  AddType application/manifest+json .webmanifest
+</IfModule>
+
+# Directory listing off
+Options -Indexes

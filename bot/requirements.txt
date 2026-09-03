@@ -1,0 +1,3 @@
+# Dipendenze del bot Telegram di snippet (Python 3.11+).
+python-telegram-bot==22.8
+requests==2.34.2

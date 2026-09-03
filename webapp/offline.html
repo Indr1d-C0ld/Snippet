@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2f6feb">
+<link rel="stylesheet" href="assets/style.css">
+<title>snippet — offline</title>
+<style>
+  .wrap { max-width: 640px; }
+  textarea { min-height: 40vh; font-size: 1rem; line-height: 1.6; }
+</style>
+</head>
+<body>
+<header><b>snippet</b><div class="meta">sei offline</div></header>
+
+<div class="wrap">
+  <div class="card">
+    <b>Nessuna connessione</b>
+    <div class="meta" style="margin-top:6px">
+      Puoi comunque scrivere: la bozza resta sul dispositivo e viene inviata
+      da sola quando torni online e riapri <code>Scrivi</code>.
+    </div>
+    <form id="offForm" style="margin-top:12px">
+      <textarea id="offBody" placeholder="Scrivi qui…" autofocus></textarea>
+      <div class="row" style="margin-top:10px; justify-content:space-between">
+        <span class="meta" id="offMsg"></span>
+        <button class="btn" type="submit">Salva bozza offline</button>
+      </div>
+    </form>
+    <div style="margin-top:12px"><a class="btn" href="compose.php">Riprova ora</a></div>
+  </div>
+
+  <div class="card" id="offList" style="display:none">
+    <b>Bozze in attesa</b>
+    <ul class="small" id="offItems" style="margin-top:8px"></ul>
+  </div>
+</div>
+
+<script>
+(function () {
+  var DB = 'snippet-drafts', STORE = 'queue';
+  function store(mode) {
+    return new Promise(function (res, rej) {
+      var r = indexedDB.open(DB, 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true }); };
+      r.onsuccess = function () { res(r.result.transaction(STORE, mode).objectStore(STORE)); };
+      r.onerror = function () { rej(r.error); };
+    });
+  }
+  function refresh() {
+    store('readonly').then(function (s) {
+      var r = s.getAll();
+      r.onsuccess = function () {
+        var items = r.result || [];
+        var box = document.getElementById('offList');
+        var ul = document.getElementById('offItems');
+        ul.innerHTML = '';
+        if (!items.length) { box.style.display = 'none'; return; }
+        box.style.display = 'block';
+        items.forEach(function (it) {
+          var li = document.createElement('li');
+          var d = new Date(it.ts || Date.now());
+          li.textContent = d.toLocaleString() + ' — ' + (it.body || '').slice(0, 60);
+          ul.appendChild(li);
+        });
+      };
+    });
+  }
+  document.getElementById('offForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var body = document.getElementById('offBody').value;
+    if (!body.trim()) return;
+    store('readwrite').then(function (s) {
+      var r = s.add({ body: body, title: '', tags: '', ts: Date.now() });
+      r.onsuccess = function () {
+        document.getElementById('offBody').value = '';
+        document.getElementById('offMsg').textContent = 'Bozza salvata sul dispositivo.';
+        refresh();
+      };
+    });
+  });
+  window.addEventListener('online', function () {
+    document.getElementById('offMsg').textContent = 'Di nuovo online — apri «Scrivi» per sincronizzare.';
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>
