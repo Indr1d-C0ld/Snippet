@@ -68,28 +68,8 @@ function ingest_status(SQLite3 $db, int $id, string $s, ?int $eid = null): void 
   $st->execute();
 }
 
-/* ---- whitelist mittente ---- */
-$username = null;
-if ($from_id > 0) {
-  $st = $db->prepare('SELECT username FROM tg_allowed WHERE tg_user_id = :i');
-  $st->bindValue(':i', $from_id, SQLITE3_INTEGER);
-  $row = $st->execute()->fetchArray(SQLITE3_ASSOC);
-  if ($row) $username = (string)$row['username'];
-}
-if ($username === null
-    && $from_id > 0
-    && in_array($from_id, array_map('intval', (array)($C['ingest_bootstrap_from'] ?? [])), true)) {
-  $u0 = (string)$db->querySingle('SELECT username FROM users ORDER BY id LIMIT 1');
-  if ($u0 === '') {
-    ingest_status($db, $log_id, 'no-user');
-    api_json(['ok' => false, 'error' => 'nessun account: crea prima quello web'], 409);
-  }
-  $ins = $db->prepare('INSERT OR IGNORE INTO tg_allowed(tg_user_id, username) VALUES(:i, :u)');
-  $ins->bindValue(':i', $from_id, SQLITE3_INTEGER);
-  $ins->bindValue(':u', $u0, SQLITE3_TEXT);
-  $ins->execute();
-  $username = $u0;
-}
+/* ---- whitelist mittente (helper condiviso in _guard.php) ---- */
+$username = api_sender($db, $from_id);
 if ($username === null) {
   ingest_status($db, $log_id, 'denied');
   api_json(['ok' => false, 'error' => 'mittente non autorizzato', 'your_id' => $from_id], 403);

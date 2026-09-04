@@ -175,7 +175,7 @@ function bar_row(string $label, int $val, int $max, string $extra = ''): string 
     <b>Attività — ultimi 12 mesi</b>
     <hr>
     <?php foreach ($m12 as $k => $v): ?>
-      <?= bar_row($k, $v, $m12max, 'voci') ?>
+      <?= bar_row(substr($k, 5, 2) . '/' . substr($k, 0, 4), $v, $m12max, 'voci') ?>
     <?php endforeach; ?>
   </div>
 

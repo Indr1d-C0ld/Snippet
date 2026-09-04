@@ -38,3 +38,29 @@ function api_json(array $x, int $code = 200): void {
     api_json(['ok' => false, 'error' => 'token non valido'], 401);
   }
 })();
+
+/**
+ * ID Telegram -> username applicativo. Riconosce i mittenti in `tg_allowed`;
+ * quelli elencati in cfg()['ingest_bootstrap_from'] vengono aggiunti al volo
+ * legandoli al primo (unico) account web. null = non autorizzato.
+ */
+function api_sender(SQLite3 $db, int $from_id): ?string {
+  if ($from_id <= 0) return null;
+
+  $st = $db->prepare('SELECT username FROM tg_allowed WHERE tg_user_id = :i');
+  $st->bindValue(':i', $from_id, SQLITE3_INTEGER);
+  $r = $st->execute()->fetchArray(SQLITE3_ASSOC);
+  if ($r) return (string)$r['username'];
+
+  $boot = array_map('intval', (array)(cfg()['ingest_bootstrap_from'] ?? []));
+  if (in_array($from_id, $boot, true)) {
+    $u = (string)$db->querySingle('SELECT username FROM users ORDER BY id LIMIT 1');
+    if ($u === '') return null;
+    $ins = $db->prepare('INSERT OR IGNORE INTO tg_allowed(tg_user_id, username) VALUES(:i, :u)');
+    $ins->bindValue(':i', $from_id, SQLITE3_INTEGER);
+    $ins->bindValue(':u', $u, SQLITE3_TEXT);
+    $ins->execute();
+    return $u;
+  }
+  return null;
+}

@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-09-04 — Interfaccia bot Telegram completa
+
+Il bot passa da semplice "cattura" a **client completo della piattaforma**.
+
+### API
+- `webapp/api/bot.php` (nuovo): endpoint di comando (guardia bearer + IP
+  locale). Lettura: `recent`, `search`, `entry` (payload completo: keyword,
+  tag, correlati, backlink, navigazione crono), `day`, `random`, `tags`,
+  `tag`, `stats`, `saved_list`. Scrittura: `saved_add/del`, `update`, `set`
+  (pin/archivia), `delete`, `note_add/del`, `tag_add/del`, `sw_add`,
+  `rebuild`, `whoami`.
+- `webapp/api/_guard.php`: nuovo `api_sender()` — risolve l'ID Telegram in
+  username applicativo (whitelist `tg_allowed` + bootstrap da
+  `ingest_bootstrap_from`). `webapp/api/ingest.php` rifattorizzato per usarlo.
+
+### Bot
+- `bot/snippet_bot.py`: riscritto. Long-polling grezzo su `requests` (nessun
+  framework). Tastiere inline: naviga correlati/backlink, ◀▶ cronologico,
+  pin, archivia, modifica, nota, +tag, elimina (con conferma), apri nel web.
+  Prompt multi-step (modifica/nota/tag/ricerca) con pulsante «✕ annulla»
+  funzionante — prima il pulsante di annullo era un `noop` silenzioso.
+  Rispondere a una scheda con del testo = nuova nota. Cattura testo, foto,
+  note vocali, audio, video, documenti. `setMyCommands` all'avvio (i comandi
+  compaiono nel menu "/"). Timeout di lettura del long-poll = `timeout`+10s.
+- `bot/requirements.txt`: solo `requests` (rimosso `python-telegram-bot`).
+- `bot/deploy/install-bot.sh` (nuovo): deploy come servizio systemd
+  (`snippet-bot.service`, utente dedicato, venv, `Restart=always`).
+
+### Data/ora in formato italiano
+- `GG/MM/AAAA` e fuso di Roma anche nelle risposte del bot; `stats.php` mesi
+  come `MM/AAAA`; `offline.html` in `it-IT`/`Europe/Rome`.
+- La direttiva `!data:` e i comandi `/day` e `/e` accettano `GG/MM/AAAA`
+  (oltre all'ISO). `entry_resolve_ref()` e i backlink `[[..]]` accettano lo
+  slug in forma italiana `GG/MM/AAAA-N`. `/e <data>` apre la voce di quel
+  giorno (o le elenca).
+
+### Titolo dal messaggio + auto-tag
+- `nlp_parse_directives()`: nuovo separatore su una riga `Titolo :: corpo`
+  (comodo su mobile, non spezza gli URL); un `
+` letterale digitato/incollato
+  viene convertito in a-capo (lato bot).
+- `nlp_looks_like_verb()` + filtro in `nlp_extract_keywords()`: esclude le
+  forme verbali dall'estrazione keyword e dagli auto-tag (infiniti anche con
+  enclitico, gerundi, `-uto`, `-ono`, imperfetti `-ava/-eva/-avo/-evo`,
+  participi `-ato` ≥7 lettere con whitelist di nomi comuni).
+  `webapp/stopwords.php`: +~150 forme verbali frequenti.
+- `webapp/lib_nlp.php`: i tag aggiunti fuori dal corpo (form web, bot) vengono
+  fusi nel `raw` come `#hashtag`, così sopravvivono a `entry_update()`.
+
+### Webapp
+- `webapp/compose.php`: risposta JSON con `ajax=1` (usata dalla coda bozze
+  offline della PWA); `<meta name="csrf">` e `id` sul form.
+
 ## 2026-09-03 — Primo rilascio
 
 Prima versione pubblica di **snippet**: diario privato con tagging e

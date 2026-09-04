@@ -1,5 +1,5 @@
 [Unit]
-Description=snippet - bot Telegram (ingest voci)
+Description=snippet - bot Telegram (interfaccia completa)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,7 +12,7 @@ WorkingDirectory=/opt/snippet-bot
 ExecStart=/opt/snippet-bot/venv/bin/python /opt/snippet-bot/snippet_bot.py
 Restart=always
 RestartSec=10
-# Il bot parla solo con api.telegram.org e con l'ingest su loopback.
+# Parla solo con api.telegram.org e con la webapp su loopback.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

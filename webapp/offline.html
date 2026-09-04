@@ -61,7 +61,10 @@
         items.forEach(function (it) {
           var li = document.createElement('li');
           var d = new Date(it.ts || Date.now());
-          li.textContent = d.toLocaleString() + ' — ' + (it.body || '').slice(0, 60);
+          var ds;
+          try { ds = d.toLocaleString('it-IT', { timeZone: 'Europe/Rome' }); }
+          catch (e) { ds = d.toLocaleString('it-IT'); }
+          li.textContent = ds + ' — ' + (it.body || '').slice(0, 60);
           ul.appendChild(li);
         });
       };

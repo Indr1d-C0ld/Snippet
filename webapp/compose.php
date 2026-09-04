@@ -94,7 +94,7 @@ try {
     <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
 
     <textarea name="body" class="compose-body" autofocus
-      placeholder="Un pensiero, una nota al volo, una riflessione…&#10;&#10;Prima riga breve + riga vuota = titolo. #tag inline. [[123]] per collegare un'altra voce.&#10;Direttive: !data:2026-09-01  !nolink  !pin  !tag:studio, viaggio"><?=h($body_val)?></textarea>
+      placeholder="Un pensiero, una nota al volo, una riflessione…&#10;&#10;Titolo: «Titolo :: resto…» oppure prima riga breve + riga vuota. #tag inline. [[123]] per collegare.&#10;Direttive: !data:01/09/2026  !nolink  !pin  !tag:studio, viaggio"><?=h($body_val)?></textarea>
 
     <div class="row" style="margin-top:10px">
       <input class="grow" name="title" value="<?=h($title_val)?>" placeholder="Titolo (facoltativo — se vuoto lo deduco)">

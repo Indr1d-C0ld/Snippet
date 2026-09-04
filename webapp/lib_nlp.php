@@ -41,11 +41,62 @@ function nlp_stopwords(): array {
 /* ============================  Keyword  ============================ */
 
 /**
- * Parole piu' frequenti del testo, al netto della stoplist.
- * Ritorna una lista ordinata di ['term' => string, 'freq' => int].
- * Logica identica a RSSIntel: minuscolo, solo lettere, lunghezza >= 4,
- * scarto degli hapax (1 occorrenza) con ripiego all'elenco completo sui
- * testi brevi.
+ * Euristica morfologica: la parola sembra una voce verbale (da escludere dalle
+ * keyword/auto-tag). Copre infiniti, gerundi e desinenze coniugate non
+ * ambigue; una piccola whitelist protegge i sostantivi che finiscono come
+ * verbi (comando, affare, militare, potere/dovere/sapere come nomi, ...).
+ */
+function nlp_looks_like_verb(string $w): bool {
+  static $keep = null;
+  if ($keep === null) {
+    $keep = array_fill_keys([
+      'comando', 'brando', 'fondo', 'mondo', 'tondo', 'biondo', 'secondo', 'profondo',
+      'affare', 'nucleare', 'militare', 'popolare', 'familiare', 'similare', 'solare',
+      'lunare', 'volgare', 'polare', 'scalare', 'quadro', 'ministro', 'registro',
+      'potere', 'dovere', 'sapere', 'piacere', 'avvenire', 'divenire', 'genere',
+      'carattere', 'pensiero', 'sentiero', 'mistero', 'materiale', 'sedere',
+      // nomi in -uto
+      'minuto', 'rifiuto', 'statuto', 'saluto', 'istituto', 'attributo',
+      'contributo', 'tributo', 'velluto', 'sostituto',
+      // nomi comuni in -ato / -avo
+      'risultato', 'certificato', 'candidato', 'avvocato', 'mercato', 'senato',
+      'comitato', 'sindacato', 'delegato', 'trattato', 'apparato', 'magistrato',
+      'laureato', 'associato', 'dottorato', 'campionato', 'bucato', 'peccato',
+      'ducato', 'formato', 'contratto', 'ritratto', 'palato', 'dato', 'stato',
+      'schiavo', 'bravo',
+    ], true);
+  }
+  if (isset($keep[$w])) return false;
+  $len = mb_strlen($w, 'UTF-8');
+  if ($len >= 6 && preg_match('/(ando|endo)$/u', $w)) return true;                 // gerundio
+  if ($len >= 5 && preg_match('/(are|ere|ire|arsi|ersi|irsi)$/u', $w)) return true; // infinito
+  if ($len >= 7 && preg_match('/(ar|er|ir)(la|lo|li|le|ne|mi|ti|ci|vi|si|gli)$/u', $w)) return true; // infinito + enclitico
+  if ($len >= 5 && preg_match('/(iamo)$/u', $w)) return true;                       // 1a pl.
+  if ($len >= 6 && preg_match('/uto$/u', $w)) return true;                          // participio -uto
+  if ($len >= 5 && preg_match('/ono$/u', $w)                                        // 3a pl. presente
+      && !preg_match('/(fono|trono|tono|abbandono|patrono|autoctono|contorno|frastuono)$/u', $w)) {
+    return true;
+  }
+  // imperfetto -ava/-eva/-avo/-evo (quasi sempre verbale); si evita -iva/-ivo
+  // perche' e' soprattutto un suffisso di nomi/aggettivi (iniziativa,
+  // prospettiva, obiettivo, motivo...).
+  if ($len >= 6 && preg_match('/(ava|eva|avo|evo)$/u', $w)
+      && !preg_match('/(caterva|larva|malva|selva|belva)$/u', $w)) {
+    return true;
+  }
+  // participio -ato (>=7 lett.), salvo i nomi comuni della whitelist sopra.
+  if ($len >= 7 && preg_match('/ato$/u', $w)) return true;
+  if (preg_match('/(avano?|evano?|ivano?|arono|erono|irono|assero|essero|issero|erebbero|irebbero|eremmo|iremmo|erete|irete|avate|evate|ivate|asti|esti|isti|ammo|emmo|immo)$/u', $w)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Parole piu' frequenti del testo, al netto della stoplist e delle voci
+ * verbali (nlp_looks_like_verb). Minuscolo, solo lettere, lunghezza >= 4;
+ * si scartano gli hapax (1 occorrenza) con ripiego all'elenco completo sui
+ * testi brevi. Ritorna una lista ordinata di ['term' => string, 'freq' => int].
  */
 function nlp_extract_keywords(string $text, int $limit = 8): array {
   $text = mb_strtolower($text, 'UTF-8');
@@ -56,7 +107,8 @@ function nlp_extract_keywords(string $text, int $limit = 8): array {
   $freq = [];
   foreach (explode(' ', $text) as $w) {
     $w = trim($w);
-    if ($w === '' || mb_strlen($w, 'UTF-8') < 4 || isset($stop[$w])) continue;
+    if ($w === '' || mb_strlen($w, 'UTF-8') < 4) continue;
+    if (isset($stop[$w]) || nlp_looks_like_verb($w)) continue;
     $freq[$w] = ($freq[$w] ?? 0) + 1;
   }
   arsort($freq);
@@ -105,6 +157,49 @@ function nlp_tag_normalize(string $t): string {
   return ($t !== '' && mb_strlen($t, 'UTF-8') <= 40) ? $t : '';
 }
 
+/**
+ * Fonde una lista di tag manuali nel testo grezzo come `#hashtag` su una riga
+ * finale, saltando quelli gia' presenti. Cosi' i tag aggiunti fuori dal corpo
+ * (form web, comando del bot) sopravvivono a un successivo entry_update(), che
+ * ricostruisce i tag solo dal `raw`.
+ */
+function nlp_merge_tags_into_raw(string $raw, array $tags): string {
+  $have = [];
+  if (preg_match_all('/(?<![\w#])#([\p{L}\p{N}][\p{L}\p{N}_\-]{1,39})/u', $raw, $m)) {
+    foreach ($m[1] as $t) {
+      $n = nlp_tag_normalize($t);
+      if ($n !== '') $have[$n] = true;
+    }
+  }
+  $add = [];
+  foreach ($tags as $t) {
+    $n = nlp_tag_normalize((string)$t);
+    if ($n === '' || isset($have[$n])) continue;
+    $tok = preg_replace('/[^\p{L}\p{N}_\-]/u', '', preg_replace('/\s+/', '_', $n)) ?? '';
+    if ($tok !== '') { $add[] = '#' . $tok; $have[$n] = true; }
+  }
+  return $add ? rtrim($raw) . "\n\n" . implode(' ', $add) : $raw;
+}
+
+/** Rimuove i token `#tag` corrispondenti (nome normalizzato) dal testo grezzo. */
+function nlp_strip_tag_from_raw(string $raw, string $name): string {
+  $target = nlp_tag_normalize($name);
+  if ($target === '') return $raw;
+  $out = preg_replace_callback(
+    '/(?<![\w#])#([\p{L}\p{N}][\p{L}\p{N}_\-]{1,39})/u',
+    static function ($m) use ($target) {
+      $n = nlp_tag_normalize(str_replace('_', ' ', $m[1]));
+      $n2 = nlp_tag_normalize($m[1]);
+      return ($n === $target || $n2 === $target) ? '' : $m[0];
+    },
+    $raw
+  ) ?? $raw;
+  // ricompatta spazi/righe rimaste vuote
+  $out = preg_replace('/[ \t]{2,}/', ' ', $out) ?? $out;
+  $out = preg_replace('/\n{3,}/', "\n\n", $out) ?? $out;
+  return rtrim($out);
+}
+
 /** Ritorna l'id del tag, creandolo se assente. */
 function nlp_tag_id(SQLite3 $db, string $name, string $kind = 'manual'): int {
   $st = $db->prepare('INSERT OR IGNORE INTO tags(name, kind) VALUES(:n, :k)');
@@ -124,16 +219,17 @@ function nlp_tag_id(SQLite3 $db, string $name, string $kind = 'manual'): int {
  *          pinned(bool), mentions[] (id o slug dai [[..]]).
  *
  * Direttive riconosciute (una per riga, la riga viene rimossa dal corpo):
- *   !data:AAAA-MM-GG            retrodata la voce (mezzogiorno locale)
- *   !data:AAAA-MM-GG HH:MM      retrodata con ora locale
+ *   !data:GG/MM/AAAA            retrodata la voce (mezzogiorno, ora di Roma)
+ *   !data:GG/MM/AAAA HH:MM      retrodata con ora locale (accetta anche AAAA-MM-GG)
  *   !nolink                     salta il calcolo delle correlazioni automatiche
  *   !pin                        fissa la voce
  *   !tag:a, b, c                aggiunge tag manuali
  * Inoltre, ovunque nel corpo (testo lasciato intatto):
  *   #parola                     -> tag manuale
  *   [[123]] / [[2026-09-03-7]]  -> backlink verso un'altra voce
- * Titolo: prima riga se comincia con "# ", oppure se e' corta (<= 80) ed e'
- * seguita da una riga vuota. In entrambi i casi la riga-titolo viene rimossa.
+ * Titolo (in ordine di precedenza): prima riga nella forma "Titolo :: corpo"
+ * (comodo su mobile), oppure "# Titolo", oppure prima riga corta (<= 80)
+ * seguita da una riga vuota. La parte-titolo viene rimossa dal corpo.
  */
 function nlp_parse_directives(string $raw): array {
   $out = [
@@ -146,8 +242,11 @@ function nlp_parse_directives(string $raw): array {
   foreach (preg_split('/\R/u', $raw) as $ln) {
     $t = trim($ln);
     if ($t !== '' && $t[0] === '!') {
-      if (preg_match('/^!data:\s*(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?\s*$/', $t, $m)) {
-        $local = $m[1] . ' ' . ($m[2] ?? '12:00') . ':00';
+      if (preg_match('~^!data:\s*(?:(\d{4})-(\d{2})-(\d{2})|(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4}))(?:[ T](\d{2}:\d{2}))?\s*$~', $t, $m)) {
+        $ymd = $m[1] !== ''
+          ? sprintf('%s-%s-%s', $m[1], $m[2], $m[3])
+          : sprintf('%04d-%02d-%02d', (int)$m[6], (int)$m[5], (int)$m[4]);
+        $local = $ymd . ' ' . (($m[7] ?? '') !== '' ? $m[7] : '12:00') . ':00';
         try {
           $dt = new DateTime($local, tzobj());
           $dt->setTimezone(new DateTimeZone('UTC'));
@@ -178,15 +277,22 @@ function nlp_parse_directives(string $raw): array {
     }
   }
 
-  // [[id]] / [[slug]] -> mention
-  if (preg_match_all('/\[\[\s*(\d{1,9}|\d{4}-\d{2}-\d{2}-\d+)\s*\]\]/u', $body, $mm)) {
+  // [[id]] / [[slug]] / [[GG/MM/AAAA-N]] -> mention
+  if (preg_match_all('~\[\[\s*(\d{1,9}|\d{4}-\d{2}-\d{2}-\d+|\d{1,2}/\d{1,2}/\d{4}-\d+)\s*\]\]~u', $body, $mm)) {
     $out['mentions'] = array_values(array_unique($mm[1]));
   }
 
   // Titolo
   $bl = preg_split('/\R/u', $body) ?: [];
   if ($bl) {
-    if (preg_match('/^#\s+(.{1,120})$/', trim($bl[0]), $m)) {
+    // 1) separatore esplicito sulla prima riga:  Titolo :: corpo...
+    //    (comodo su mobile: niente riga vuota). Gli spazi attorno a "::"
+    //    evitano di spezzare gli URL (https://...).
+    if (preg_match('/^(.{1,80}?)\s+::\s+(\S.*)$/u', $bl[0], $m)) {
+      $out['title'] = trim($m[1]);
+      $bl[0] = trim($m[2]);
+      $body = ltrim(implode("\n", $bl));
+    } elseif (preg_match('/^#\s+(.{1,120})$/', trim($bl[0]), $m)) {
       $out['title'] = trim($m[1]);
       array_shift($bl);
       $body = ltrim(implode("\n", $bl));
@@ -205,10 +311,16 @@ function nlp_parse_directives(string $raw): array {
 
 /* ============================  Persistenza  ============================ */
 
-/** id o slug -> id di voce esistente, oppure null. */
+/**
+ * id, slug (AAAA-MM-GG-N) o slug in formato italiano (GG/MM/AAAA-N)
+ * -> id di voce esistente, oppure null.
+ */
 function entry_resolve_ref(SQLite3 $db, string $ref): ?int {
   $ref = trim($ref);
   if ($ref === '') return null;
+  if (preg_match('~^(\d{1,2})/(\d{1,2})/(\d{4})-(\d+)$~', $ref, $m)) {
+    $ref = sprintf('%04d-%02d-%02d-%d', (int)$m[3], (int)$m[2], (int)$m[1], (int)$m[4]);
+  }
   if (ctype_digit($ref)) {
     $st = $db->prepare('SELECT id FROM entries WHERE id = :i');
     $st->bindValue(':i', (int)$ref, SQLITE3_INTEGER);
@@ -358,6 +470,11 @@ function entry_save(SQLite3 $db, array $in): array {
   $author = (string)($in['author'] ?? '');
   if ($author === '') throw new RuntimeException('Autore mancante.');
 
+  // I tag passati a parte (form web, bot) vengono fusi nel raw come #hashtag,
+  // cosi' restano la sola fonte dei tag manuali e sopravvivono a entry_update().
+  $extra = array_filter(array_map('strval', (array)($in['tags'] ?? [])));
+  if ($extra) $raw = nlp_merge_tags_into_raw($raw, $extra);
+
   $d = nlp_parse_directives($raw);
   $body  = $d['body'] !== '' ? $d['body'] : trim($raw);
   $title = $d['title'];
@@ -369,10 +486,7 @@ function entry_save(SQLite3 $db, array $in): array {
     ?? (trim((string)($in['created_at'] ?? '')) ?: now_utc());
   $pinned = !empty($in['pinned']) || $d['pinned'] ? 1 : 0;
 
-  $manual_tags = array_merge(
-    array_map('strval', (array)($in['tags'] ?? [])),
-    $d['tags']
-  );
+  $manual_tags = $d['tags'];
 
   $st = $db->prepare("
     INSERT INTO entries
@@ -487,7 +601,7 @@ function graph_rebuild(SQLite3 $db): array {
 function entry_render_body(string $body): string {
   $esc = h($body);
   $esc = preg_replace_callback(
-    '/\[\[\s*(\d{1,9}|\d{4}-\d{2}-\d{2}-\d+)\s*\]\]/u',
+    '~\[\[\s*(\d{1,9}|\d{4}-\d{2}-\d{2}-\d+|\d{1,2}/\d{1,2}/\d{4}-\d+)\s*\]\]~u',
     static function ($m) {
       $ref = $m[1];
       return '<a href="entry.php?e=' . rawurlencode($ref) . '">[[' . h($ref) . ']]</a>';
