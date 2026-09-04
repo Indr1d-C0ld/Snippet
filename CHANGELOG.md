@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-09-04 — Gate PIN sul bot + rifiniture
+
+### Gate PIN (bot/snippet_bot.py)
+- PIN di sblocco opzionale (`SNIPPET_PIN` nel `.env`). Finché non lo si invia
+  in chat, il bot **non mostra contenuti e non esegue comandi**; ogni messaggio
+  è un tentativo di PIN e viene **cancellato subito** dalla chat (il PIN non
+  resta in cronologia). Copre anche i tap sui pulsanti delle schede.
+- Finestra di validità **fissa** (`SNIPPET_PIN_TIMEOUT`, default 1800 s): scaduta,
+  il PIN va reinserito a prescindere dall'attività. Ogni riavvio del servizio
+  ri-blocca (lo stato di sblocco vive solo in RAM).
+- 5 tentativi errati → 5 minuti di blocco (durante i quali nemmeno il PIN
+  corretto passa).
+- Nuovo comando **`/lock`**: ri-blocca subito e cancella le schede voce ancora
+  rimovibili (finestra di 48 h di Telegram).
+- `bot/.env.example`: documentate `SNIPPET_PIN` / `SNIPPET_PIN_TIMEOUT`.
+
+### Rifiniture bot
+- Comandi registrati su Telegram con `setMyCommands` (compaiono nel menu «/»).
+- Pulsante **«✕ annulla»** ora funzionante ovunque (conferme di eliminazione,
+  `/rebuild`, prompt di modifica/nota/tag/ricerca): dà un feedback e rimuove
+  il messaggio; prima era un `noop` silenzioso.
+- `/e` accetta id, slug `AAAA-MM-GG-N`, slug italiano `GG/MM/AAAA-N` e una
+  **data nuda** `GG/MM/AAAA` (apre la voce del giorno o la elenca).
+  `entry_resolve_ref()` e i backlink `[[..]]` accettano lo slug italiano;
+  il bot mostra lo slug come `GG/MM/AAAA-N` e l'id come `#N`.
+- Read-timeout del long-poll portato a `timeout`+10 s (elimina i «Read timed
+  out» spuri nel log).
+
 ## 2026-09-04 — Interfaccia bot Telegram completa
 
 Il bot passa da semplice "cattura" a **client completo della piattaforma**.

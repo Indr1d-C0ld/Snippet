@@ -35,6 +35,8 @@ BOT_API_URL = os.environ.get("BOT_API_URL", "http://127.0.0.1/snippet/api/bot.ph
 INGEST_URL = os.environ.get("INGEST_URL", "http://127.0.0.1/snippet/api/ingest.php")
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 ALLOWED_IDS = {int(x) for x in os.environ.get("ALLOWED_IDS", "").replace(" ", "").split(",") if x}
+PIN = os.environ.get("SNIPPET_PIN", "").strip()
+PIN_TTL = int(os.environ.get("SNIPPET_PIN_TIMEOUT", "1800") or "1800")  # validità sblocco (s)
 
 if not BOT_TOKEN or not INGEST_TOKEN:
     print("BOT_TOKEN / INGEST_TOKEN mancanti (vedi .env.example)", file=sys.stderr)
@@ -48,8 +50,41 @@ log = logging.getLogger("snippet-bot")
 
 STATE: dict = {}        # chat_id -> {"await": str, ...}
 CARD_MSGS: dict = {}    # message_id -> slug  (per rispondere a una card = nuova nota)
+AUTH: dict = {}         # chat_id -> epoch dello sblocco (finestra fissa PIN_TTL)
+PIN_FAIL: dict = {}     # chat_id -> [tentativi_falliti, blocco_fino_a_epoch]
 
 _CANCEL_KB = [[{"text": "✕ annulla", "callback_data": "cancel"}]]
+
+
+# --------------------------------------------------------------------------- PIN
+
+def gate_ok(chat_id):
+    """True se il gate è disattivato o la chat è sbloccata e non scaduta.
+    La finestra è FISSA: PIN_TTL secondi dallo sblocco, poi serve di nuovo il PIN
+    (a prescindere dall'attività). Anche ogni riavvio del servizio ri-blocca,
+    perché AUTH sta solo in memoria."""
+    if not PIN:
+        return True
+    return (time.time() - AUTH.get(chat_id, 0)) < PIN_TTL
+
+
+def gate_try(chat_id, text):
+    """Valuta un tentativo di PIN. Ritorna (esito, extra):
+       ok / bad (extra = tentativi rimasti) / locked (extra = secondi di blocco)."""
+    now = time.time()
+    cnt, until = PIN_FAIL.get(chat_id, [0, 0])
+    if now < until:
+        return "locked", int(until - now)
+    if text.strip() == PIN:
+        AUTH[chat_id] = now
+        PIN_FAIL.pop(chat_id, None)
+        return "ok", 0
+    cnt += 1
+    if cnt >= 5:
+        PIN_FAIL[chat_id] = [0, now + 300]      # 5 tentativi -> 5 min di blocco
+        return "locked", 300
+    PIN_FAIL[chat_id] = [cnt, 0]
+    return "bad", 5 - cnt
 
 # Registrati su Telegram: appaiono nel menu "/" e nell'autocompletamento.
 BOT_COMMANDS = [
@@ -64,6 +99,7 @@ BOT_COMMANDS = [
     ("stats", "numeri e streak"),
     ("saved", "ricerche salvate"),
     ("rebuild", "ricalcola le correlazioni"),
+    ("lock", "blocca il bot (richiede il PIN)"),
     ("help", "guida"),
 ]
 
@@ -84,7 +120,8 @@ HELP = (
     "/e &lt;slug|id&gt; — apri una voce\n"
     "/stats — numeri e streak\n"
     "/saved — ricerche salvate\n"
-    "/rebuild — ricalcola le correlazioni\n\n"
+    "/rebuild — ricalcola le correlazioni\n"
+    "/lock — blocca il bot (poi serve il PIN)\n\n"
     "Rispondi a una card con del testo per aggiungerci una nota."
 )
 
@@ -516,6 +553,19 @@ def handle_command(chat_id, uid, text):
     elif cmd in ("annulla", "cancel"):
         STATE.pop(chat_id, None)
         send(chat_id, "Ok, annullato.")
+    elif cmd == "lock":
+        if not PIN:
+            send(chat_id, "Gate PIN non attivo (SNIPPET_PIN non impostato).")
+        else:
+            AUTH.pop(chat_id, None)
+            STATE.pop(chat_id, None)
+            removed = 0
+            for m in list(CARD_MSGS.keys()):
+                if tg("deleteMessage", chat_id=chat_id, message_id=m):
+                    removed += 1
+                CARD_MSGS.pop(m, None)
+            send(chat_id, f"🔒 bloccato. Rimosse {removed} schede dalla chat "
+                          "(solo quelle < 48 h). Inviami il PIN per rientrare.")
     elif cmd == "whoami":
         d = api("whoami", uid)
         send(chat_id, f"ID <code>{uid}</code> → utente <b>{esc(d.get('username','?'))}</b>"
@@ -677,6 +727,24 @@ def on_message(msg):
 
     text = msg.get("text", "")
 
+    # --- gate PIN: finché bloccato, nessun contenuto/comando; ogni messaggio
+    #     è un tentativo di PIN e viene subito cancellato dalla chat ---
+    if PIN and not gate_ok(chat_id):
+        tg("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
+        low = text.strip().lower().split("@")[0]
+        if low in ("/start", "/help", "/lock"):
+            send(chat_id, "🔒 <b>snippet è bloccato.</b> Inviami il PIN per sbloccare.")
+            return
+        res, extra = gate_try(chat_id, text)
+        if res == "ok":
+            send(chat_id, f"🔓 sbloccato — vale {PIN_TTL // 60} min, poi serve di nuovo "
+                          "il PIN. <code>/lock</code> per bloccare subito.")
+        elif res == "locked":
+            send(chat_id, f"🔒 troppi tentativi: riprova tra {extra}s.")
+        else:
+            send(chat_id, f"🔒 PIN errato. Tentativi rimasti: {extra}.")
+        return
+
     # risposta a una card -> nota
     rep = msg.get("reply_to_message")
     if rep and rep.get("message_id") in CARD_MSGS and text and not text.startswith("/"):
@@ -704,6 +772,9 @@ def handle(update):
         if not ALLOWED_IDS or uid not in ALLOWED_IDS:
             answer_cb(cq["id"])          # chiude lo spinner, nessun messaggio
             return
+        if PIN and not gate_ok(cq["message"]["chat"]["id"]):
+            answer_cb(cq["id"], "🔒 bloccato — invia il PIN in chat")
+            return
         on_callback(cq, uid)
     elif "message" in update:
         on_message(update["message"])
@@ -716,6 +787,7 @@ def main():
         log.warning("ALLOWED_IDS vuoto: il bot ignora tutti fuorche' quanto ammesso lato server")
     else:
         log.info("ID Telegram ammessi: %s", sorted(ALLOWED_IDS))
+    log.info("gate PIN: %s", ("attivo, finestra %d min" % (PIN_TTL // 60)) if PIN else "non attivo")
     log.info("snippet-bot avviato come @%s (api: %s)", (me or {}).get("username", "?"), BOT_API_URL)
     offset = None
     while True:
