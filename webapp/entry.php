@@ -31,8 +31,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     header('Location: ' . entry_url($ref)); exit;
   }
   if ($action === 'delete') {
-    $dbw->exec('DELETE FROM entries WHERE id=' . $eid);
-    flash_set('ok', 'Voce eliminata.');
+    $res = entry_delete($dbw, $eid);   // rimuove anche i file degli allegati
+    flash_set('ok', 'Voce eliminata.' . ($res['files'] ? " Rimossi {$res['files']} allegati." : ''));
     header('Location: diary.php'); exit;
   }
   http_response_code(400); die('Azione non valida.');

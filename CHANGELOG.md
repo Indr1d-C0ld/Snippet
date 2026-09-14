@@ -1,5 +1,69 @@
 # Changelog
 
+## 2026-09-14 — Audit completo: sicurezza, ciclo di vita dei dati, operativita'
+
+Revisione integrale della piattaforma (webapp, API, bot, script, deploy,
+configurazione, storia git). Risultati puliti su: SQL injection, XSS, CSRF,
+path traversal, efficacia dell'`.htaccess`, gate bearer+IP delle API, gate PIN
+del bot, integrita' del database, assenza di segreti nella storia git.
+Di seguito i difetti trovati e corretti.
+
+### Sicurezza
+- **Isolamento della sessione** (`webapp/lib.php`, `config.sample.php`). La
+  sessione usava il nome di default `PHPSESSID` su path `/`: ogni altra
+  applicazione PHP sullo stesso dominio condivideva lo stesso file di sessione
+  e le stesse chiavi (`uid`, `uname`, `role`), quindi autenticarsi su una
+  valeva come autenticarsi su snippet. Ora il nome del cookie e il path sono
+  configurabili (`session_name`, `session_cookie_path`) e il flag `secure`
+  viene attivato da solo quando la richiesta arriva in HTTPS.
+- **Nessuna sessione negli endpoint API** (`webapp/api/_guard.php`): definisce
+  `SNIPPET_NO_SESSION`, cosi' le chiamate del bot non creano file di sessione.
+- **`webapp/attachment.php`**: il `Content-Type` non viene piu' rimandato tale
+  e quale dal database (dato che proviene dal client di ingest). Solo i tipi in
+  whitelist vengono serviti inline; tutto il resto diventa un download opaco.
+  In particolare `image/svg+xml` non e' in whitelist: un SVG servito inline
+  sulla stessa origine puo' eseguire script.
+- **Throttling del login** (`webapp/login.php`, `webapp/lib.php`, `schema.sql`):
+  nuova tabella `login_throttle`; oltre 8 tentativi falliti in 15 minuti l'IP
+  resta bloccato 15 minuti e le credenziali non vengono nemmeno valutate.
+  Prima l'unico freno era un `usleep(0.3s)`.
+
+### Ciclo di vita dei dati
+- **`ingest_log` non conserva piu' il testo delle voci cancellate**
+  (`schema.sql`): nuovo trigger `entries_ad_purge_log` che a ogni
+  `DELETE` su `entries` azzera `raw_json` e marca la riga come `purged`.
+  "Elimina" ora elimina davvero.
+- **I file degli allegati vengono rimossi dal disco** (`webapp/lib_nlp.php`,
+  `entry.php`, `api/bot.php`): nuova `entry_delete()` che legge i percorsi
+  prima della cancellazione, elimina la voce e poi rimuove i file (con lo
+  stesso prefix-check di `attachment.php`) e la cartella se vuota. Prima il
+  `CASCADE` rimuoveva solo le righe, lasciando i file orfani per sempre.
+- **Il pin non viene piu' azzerato da una modifica** (`webapp/lib_nlp.php`):
+  `entry_update()` preservava `archived` ma resettava `pinned`, quindi ogni
+  modifica, `+tag` o `tag_del` spinnava la voce. Il pin e' uno stato della
+  voce, non del testo: la direttiva `!pin` puo' solo attivarlo.
+
+### Qualita' dell'auto-tagging
+- `webapp/lib_nlp.php`, `webapp/stopwords.php`: esclusi anche gli avverbi in
+  `-mente` (>= 9 lettere, per non toccare *clemente/veemente/demente*) e il
+  futuro semplice (`-ra'`, `-ro'`, `-rai`, `-remo`, `-rete`, `-ranno`);
+  aggiunte ~30 forme verbali. Il suffisso nominale `-iere` e' ora escluso
+  dalla regola sugli infiniti (*mestiere, quartiere, carrozziere* restano
+  keyword) e `parere`/`volere` sono in whitelist.
+
+### Bot
+- Un messaggio non testuale (foto, vocale, documento) inviato mentre il bot e'
+  bloccato non viene piu' cancellato e non consuma un tentativo di PIN: veniva
+  perso senza essere salvato.
+
+### Operativita'
+- `bin/snippet_backup.sh` (nuovo): snapshot locale di database (`VACUUM INTO`
+  da sorgente `immutable`) e allegati, con verifica di leggibilita' e rotazione
+  degli ultimi N. `deploy/snippet-backup.{service,timer}.sample` (giornaliero).
+- `deploy/install.sh`: installa e abilita anche i timer `snippet-maintenance`
+  (ricostruzione del grafo) e `snippet-backup`, che finora non erano mai stati
+  messi in servizio.
+
 ## 2026-09-04 — Gate PIN sul bot + rifiniture
 
 ### Gate PIN (bot/snippet_bot.py)

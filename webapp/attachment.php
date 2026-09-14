@@ -18,8 +18,24 @@ if ($base === false || $full === false || !str_starts_with($full, $base . DIRECT
   http_response_code(404); die('file non disponibile');
 }
 
-$mime = (string)($a['mime'] ?: 'application/octet-stream');
-$inline = (bool)preg_match('~^(image|audio|video)/~', $mime) || $mime === 'application/pdf';
+/**
+ * Il MIME arriva dal client di ingest (Telegram) ed e' quindi dato non fidato:
+ * non lo si rimanda mai tale e quale. Solo i tipi in whitelist vengono serviti
+ * con il loro Content-Type e mostrati inline; tutto il resto diventa un
+ * download opaco. In particolare image/svg+xml NON e' in whitelist: un SVG
+ * servito inline sulla stessa origine puo' eseguire script (la CSP del portale
+ * consente 'unsafe-inline').
+ */
+const ATT_INLINE_MIME = [
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/heic',
+  'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/wav', 'audio/webm',
+  'video/mp4', 'video/webm', 'video/quicktime',
+  'application/pdf',
+];
+
+$declared = strtolower(trim(explode(';', (string)($a['mime'] ?: ''))[0]));
+$inline   = in_array($declared, ATT_INLINE_MIME, true);
+$mime     = $inline ? $declared : 'application/octet-stream';
 $name = preg_replace('/[^\w.\- ]+/u', '_', (string)($a['orig_name'] ?: ('allegato-' . $id)));
 
 header('Content-Type: ' . $mime);

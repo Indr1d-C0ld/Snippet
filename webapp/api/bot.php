@@ -368,9 +368,8 @@ try {
 
   case 'delete': {
     $id = b_resolve($db, $in['ref'] ?? '');
-    $label = b_label((array)$db->querySingle('SELECT id,title,body FROM entries WHERE id=' . $id, true));
-    $db->exec('DELETE FROM entries WHERE id=' . $id);
-    api_json(['ok' => true, 'deleted' => $label]);
+    $res = entry_delete($db, $id);     // rimuove anche i file degli allegati
+    api_json(['ok' => true, 'deleted' => $res['label'], 'files' => $res['files']]);
   }
 
   case 'note_add': {

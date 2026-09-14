@@ -228,4 +228,7 @@ return [
     'essendo', 'vengono', 'fanno', 'dicono', 'possono', 'devono', 'vogliono',
     'mettono', 'prendono', 'scrivono', 'leggono', 'stanno', 'danno', 'vanno',
     'tratta', 'trattano', 'trattato', 'trattata', 'riguardano', 'riguardato',
+    'poter', 'voler', 'dover', 'saper', 'esser', 'aver', 'andar', 'far',
+    'manca', 'mancano', 'basta', 'bastano', 'avanti', 'indietro', 'insieme',
+    'sarà', 'sara', 'farà', 'fara', 'sarò', 'saro', 'farò', 'faro',
 ];

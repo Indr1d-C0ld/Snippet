@@ -170,6 +170,15 @@ CREATE TABLE IF NOT EXISTS saved_searches (
 );
 CREATE INDEX IF NOT EXISTS idx_saved_searches_owner ON saved_searches(owner, name);
 
+-- Throttling dei tentativi di login (per indirizzo IP). Senza questo il solo
+-- freno era un usleep(0.3s): ~3 tentativi/s (audit 14/09/2026).
+CREATE TABLE IF NOT EXISTS login_throttle (
+  ip           TEXT PRIMARY KEY,
+  fails        INTEGER NOT NULL DEFAULT 0,
+  first_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  locked_until TEXT
+);
+
 -- Log grezzo degli update Telegram, per audit e riprocesso.
 CREATE TABLE IF NOT EXISTS ingest_log (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,6 +191,14 @@ CREATE TABLE IF NOT EXISTS ingest_log (
   entry_id      INTEGER,
   status        TEXT
 );
+
+-- Alla cancellazione di una voce il suo testo grezzo NON deve sopravvivere nel
+-- log di ingest: "elimina" deve eliminare davvero (audit 14/09/2026).
+CREATE TRIGGER IF NOT EXISTS entries_ad_purge_log AFTER DELETE ON entries BEGIN
+  UPDATE ingest_log
+     SET raw_json = NULL, status = 'purged'
+   WHERE entry_id = old.id;
+END;
 
 -- Mittenti Telegram autorizzati (whitelist applicata anche lato bot).
 CREATE TABLE IF NOT EXISTS tg_allowed (

@@ -53,7 +53,7 @@ function nlp_looks_like_verb(string $w): bool {
       'comando', 'brando', 'fondo', 'mondo', 'tondo', 'biondo', 'secondo', 'profondo',
       'affare', 'nucleare', 'militare', 'popolare', 'familiare', 'similare', 'solare',
       'lunare', 'volgare', 'polare', 'scalare', 'quadro', 'ministro', 'registro',
-      'potere', 'dovere', 'sapere', 'piacere', 'avvenire', 'divenire', 'genere',
+      'potere', 'dovere', 'sapere', 'piacere', 'parere', 'volere', 'avvenire', 'divenire', 'genere',
       'carattere', 'pensiero', 'sentiero', 'mistero', 'materiale', 'sedere',
       // nomi in -uto
       'minuto', 'rifiuto', 'statuto', 'saluto', 'istituto', 'attributo',
@@ -64,12 +64,17 @@ function nlp_looks_like_verb(string $w): bool {
       'laureato', 'associato', 'dottorato', 'campionato', 'bucato', 'peccato',
       'ducato', 'formato', 'contratto', 'ritratto', 'palato', 'dato', 'stato',
       'schiavo', 'bravo',
+      // nomi/aggettivi protetti dalle regole su futuri e avverbi
+      'supremo', 'estremo', 'samurai', 'parete', 'clemente', 'veemente', 'demente',
+      'sorridente', 'presidente', 'dirigente', 'corrente', 'ambiente',
     ], true);
   }
   if (isset($keep[$w])) return false;
   $len = mb_strlen($w, 'UTF-8');
   if ($len >= 6 && preg_match('/(ando|endo)$/u', $w)) return true;                 // gerundio
-  if ($len >= 5 && preg_match('/(are|ere|ire|arsi|ersi|irsi)$/u', $w)) return true; // infinito
+  if ($len >= 5 && preg_match('/(are|ere|ire|arsi|ersi|irsi)$/u', $w)
+      && !preg_match('/iere$/u', $w)) return true;   // infinito (-iere e' nominale:
+                                                     // mestiere, quartiere, bicchiere)
   if ($len >= 7 && preg_match('/(ar|er|ir)(la|lo|li|le|ne|mi|ti|ci|vi|si|gli)$/u', $w)) return true; // infinito + enclitico
   if ($len >= 5 && preg_match('/(iamo)$/u', $w)) return true;                       // 1a pl.
   if ($len >= 6 && preg_match('/uto$/u', $w)) return true;                          // participio -uto
@@ -86,6 +91,14 @@ function nlp_looks_like_verb(string $w): bool {
   }
   // participio -ato (>=7 lett.), salvo i nomi comuni della whitelist sopra.
   if ($len >= 7 && preg_match('/ato$/u', $w)) return true;
+  // avverbi in -mente: non sono keyword di contenuto (nuovamente, relativamente).
+  // >= 9 lettere per non toccare clemente/veemente/demente.
+  if ($len >= 9 && preg_match('/mente$/u', $w)) return true;
+  // futuro semplice: -ra'/-ro'/-rai/-remo/-rete/-ranno
+  if ($len >= 5 && preg_match('/(rà|rò)$/u', $w)) return true;
+  if ($len >= 5 && preg_match('/rai$/u', $w)) return true;
+  if ($len >= 6 && preg_match('/(remo|ranno)$/u', $w)) return true;
+  if ($len >= 7 && preg_match('/rete$/u', $w)) return true;
   if (preg_match('/(avano?|evano?|ivano?|arono|erono|irono|assero|essero|issero|erebbero|irebbero|eremmo|iremmo|erete|irete|avate|evate|ivate|asti|esti|isti|ammo|emmo|immo)$/u', $w)) {
     return true;
   }
@@ -530,7 +543,7 @@ function entry_save(SQLite3 $db, array $in): array {
  * Lo slug (permalink) NON cambia. Ritorna ['id','slug'].
  */
 function entry_update(SQLite3 $db, int $id, string $raw, string $editor): array {
-  $cur = $db->querySingle('SELECT slug, created_at FROM entries WHERE id = ' . $id, true);
+  $cur = $db->querySingle('SELECT slug, created_at, pinned FROM entries WHERE id = ' . $id, true);
   if (!$cur) throw new RuntimeException('Voce inesistente.');
   if (trim($raw) === '') throw new RuntimeException('Corpo vuoto.');
 
@@ -553,7 +566,9 @@ function entry_update(SQLite3 $db, int $id, string $raw, string $editor): array 
   $st->bindValue(':c', $created, SQLITE3_TEXT);
   $st->bindValue(':wc', word_count($body), SQLITE3_INTEGER);
   $st->bindValue(':cc', mb_strlen($body, 'UTF-8'), SQLITE3_INTEGER);
-  $st->bindValue(':pin', $d['pinned'] ? 1 : 0, SQLITE3_INTEGER);
+  // Il pin e' uno stato della voce, non del testo: una modifica non lo azzera.
+  // La direttiva !pin puo' solo ATTIVARLO; per toglierlo si usa il pulsante.
+  $st->bindValue(':pin', ($d['pinned'] || (int)$cur['pinned'] === 1) ? 1 : 0, SQLITE3_INTEGER);
   $st->bindValue(':now', now_utc(), SQLITE3_TEXT);
   $st->bindValue(':i', $id, SQLITE3_INTEGER);
   $st->execute();
@@ -590,6 +605,43 @@ function graph_rebuild(SQLite3 $db): array {
     'edges'   => (int)$db->querySingle('SELECT COUNT(*) FROM links'),
     'seconds' => round(microtime(true) - $t0, 2),
   ];
+}
+
+/**
+ * Elimina una voce E i file dei suoi allegati dal disco.
+ * Va usata al posto di un semplice DELETE: il vincolo ON DELETE CASCADE
+ * rimuove le righe di `attachments` ma lascerebbe i file orfani per sempre
+ * (audit 14/09/2026). I percorsi vanno letti PRIMA della cancellazione.
+ * Ritorna ['label' => string, 'files' => int].
+ */
+function entry_delete(SQLite3 $db, int $id): array {
+  $row = $db->querySingle('SELECT id, title, body FROM entries WHERE id = ' . $id, true);
+  if (!$row) throw new RuntimeException('Voce inesistente.');
+  $label = trim((string)($row['title'] ?? ''));
+  if ($label === '') $label = first_line((string)($row['body'] ?? ''), 70);
+  if ($label === '') $label = 'voce ' . $id;
+
+  $paths = [];
+  $st = $db->prepare('SELECT path FROM attachments WHERE entry_id = :i');
+  $st->bindValue(':i', $id, SQLITE3_INTEGER);
+  $r = $st->execute();
+  while ($x = $r->fetchArray(SQLITE3_ASSOC)) $paths[] = (string)$x['path'];
+
+  $db->exec('DELETE FROM entries WHERE id = ' . $id);
+
+  $removed = 0;
+  $base = realpath((string)cfg()['attachments_dir']);
+  if ($base !== false) {
+    foreach ($paths as $rel) {
+      $full = realpath($base . '/' . $rel);
+      // stesso prefix-check di attachment.php: mai uscire da attachments_dir
+      if ($full !== false && str_starts_with($full, $base . DIRECTORY_SEPARATOR) && is_file($full)) {
+        if (@unlink($full)) $removed++;
+      }
+    }
+    @rmdir($base . '/' . $id);   // rimuove la cartella della voce se vuota
+  }
+  return ['label' => $label, 'files' => $removed];
 }
 
 /* ============================  Rendering  ============================ */

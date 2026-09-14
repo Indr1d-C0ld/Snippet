@@ -730,6 +730,14 @@ def on_message(msg):
     # --- gate PIN: finché bloccato, nessun contenuto/comando; ogni messaggio
     #     è un tentativo di PIN e viene subito cancellato dalla chat ---
     if PIN and not gate_ok(chat_id):
+        # Un messaggio NON testuale (foto, vocale, documento) non puo' essere un
+        # PIN: non lo si cancella (si perderebbe il contenuto) e non consuma un
+        # tentativo. Si avvisa soltanto.
+        if not text.strip():
+            send(chat_id, "🔒 <b>snippet è bloccato</b> — il contenuto non è stato "
+                          "salvato. Inviami il PIN, poi rimandalo.")
+            return
+        # Il testo invece va rimosso subito: potrebbe essere il PIN.
         tg("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
         low = text.strip().lower().split("@")[0]
         if low in ("/start", "/help", "/lock"):

@@ -22,6 +22,7 @@ $nUsers = (int)$dbw->querySingle('SELECT COUNT(*) FROM users');
 $bootstrap = ($nUsers === 0);
 
 $err  = '';
+$ip   = login_client_ip();
 $next = safe_next((string)($_POST['next'] ?? $_GET['next'] ?? ''));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -32,6 +33,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   $username = trim((string)($_POST['username'] ?? ''));
   $password = (string)($_POST['password'] ?? '');
+
+  // Throttling per IP: oltre LOGIN_MAX_FAIL tentativi falliti nella finestra
+  // l'IP resta bloccato e le credenziali non vengono nemmeno valutate.
+  $wait = login_locked_for($dbw, $ip);
+  if ($wait > 0) {
+    $err = 'Troppi tentativi falliti. Riprova fra ' . (int)ceil($wait / 60) . ' minuti.';
+  }
 
   if ($bootstrap) {
     $password2 = (string)($_POST['password2'] ?? '');
@@ -60,7 +68,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       header('Location: compose.php');
       exit;
     }
-  } else {
+  } elseif ($err === '') {
     $st = $dbw->prepare(
       'SELECT id, username, password_hash, role, disabled FROM users WHERE username = :u'
     );
@@ -70,8 +78,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$row || (int)$row['disabled'] === 1
         || !password_verify($password, (string)$row['password_hash'])) {
       $err = 'Credenziali non valide.';
+      login_note_fail($dbw, $ip);
       usleep(300000);
     } else {
+      login_note_ok($dbw, $ip);
       session_regenerate_id(true);
       $_SESSION['uid']   = (int)$row['id'];
       $_SESSION['uname'] = (string)$row['username'];

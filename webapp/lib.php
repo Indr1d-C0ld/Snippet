@@ -131,18 +131,37 @@ function local_ymd(string $utc): string {
 
 /* =====================  Sessione + CSRF  ===================== */
 
-if (session_status() === PHP_SESSION_NONE) {
+/**
+ * La sessione e' deliberatamente ISOLATA dalle altre applicazioni ospitate
+ * sullo stesso dominio: nome del cookie dedicato e path ristretto alla sola
+ * cartella dell'app. Senza questo, due app che usano il default `PHPSESSID`
+ * su path `/` condividono lo stesso file di sessione (stesso save_path) e
+ * quindi le stesse chiavi (`uid`, `uname`, `role`): autenticarsi su una
+ * varrebbe come autenticarsi sull'altra.
+ *
+ * Gli endpoint in api/ non usano sessioni (autenticano con bearer token):
+ * definiscono SNIPPET_NO_SESSION prima di includere questo file, cosi' non
+ * si creano file di sessione inutili a ogni messaggio del bot.
+ */
+if (!defined('SNIPPET_NO_SESSION') && session_status() === PHP_SESSION_NONE) {
+  $C = cfg();
+
+  $https = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+        || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443;
+
+  session_name((string)($C['session_name'] ?? 'SNIPPETSESS'));
   session_set_cookie_params([
     'lifetime' => 0,
-    'path'     => '/',
+    'path'     => (string)($C['session_cookie_path'] ?? '/'),
     'httponly' => true,
     'samesite' => 'Lax',
-    // 'secure' => true,  // abilitare quando servito solo via HTTPS
+    'secure'   => $https,
   ]);
   session_start();
-}
-if (empty($_SESSION['csrf'])) {
-  $_SESSION['csrf'] = bin2hex(random_bytes(16));
+
+  if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(16));
+  }
 }
 
 function csrf_token(): string {
@@ -185,6 +204,70 @@ function users_schema(): string {
 
 function users_ensure(SQLite3 $dbw): void {
   $dbw->exec(users_schema());
+}
+
+/* ----------------  Throttling dei tentativi di login  ---------------- */
+
+const LOGIN_WINDOW   = 900;   // finestra di conteggio (s)
+const LOGIN_MAX_FAIL = 8;     // tentativi falliti tollerati nella finestra
+const LOGIN_LOCK     = 900;   // durata del blocco (s)
+
+function login_throttle_ensure(SQLite3 $db): void {
+  $db->exec("CREATE TABLE IF NOT EXISTS login_throttle (
+    ip TEXT PRIMARY KEY, fails INTEGER NOT NULL DEFAULT 0,
+    first_at TEXT NOT NULL DEFAULT (datetime('now')), locked_until TEXT);");
+}
+
+function login_client_ip(): string {
+  // Solo REMOTE_ADDR: gli header tipo X-Forwarded-For sono falsificabili.
+  return (string)($_SERVER['REMOTE_ADDR'] ?? '?');
+}
+
+/** Secondi di blocco ancora da scontare per questo IP (0 = puo' tentare). */
+function login_locked_for(SQLite3 $db, string $ip): int {
+  login_throttle_ensure($db);
+  $st = $db->prepare('SELECT locked_until FROM login_throttle WHERE ip = :i');
+  $st->bindValue(':i', $ip, SQLITE3_TEXT);
+  $r = $st->execute()->fetchArray(SQLITE3_ASSOC);
+  if (!$r || empty($r['locked_until'])) return 0;
+  $left = strtotime((string)$r['locked_until'] . ' UTC') - time();
+  return $left > 0 ? $left : 0;
+}
+
+/** Registra un tentativo fallito; blocca l'IP oltre LOGIN_MAX_FAIL. */
+function login_note_fail(SQLite3 $db, string $ip): void {
+  login_throttle_ensure($db);
+  $st = $db->prepare('SELECT fails, first_at FROM login_throttle WHERE ip = :i');
+  $st->bindValue(':i', $ip, SQLITE3_TEXT);
+  $r = $st->execute()->fetchArray(SQLITE3_ASSOC);
+
+  $fails = 1;
+  if ($r && (time() - strtotime((string)$r['first_at'] . ' UTC')) < LOGIN_WINDOW) {
+    $fails = (int)$r['fails'] + 1;   // ancora dentro la finestra: si accumula
+  }
+  $locked = $fails >= LOGIN_MAX_FAIL ? gmdate('Y-m-d H:i:s', time() + LOGIN_LOCK) : null;
+  if ($locked !== null) $fails = 0;  // il blocco azzera il contatore
+
+  $st = $db->prepare("INSERT INTO login_throttle(ip, fails, first_at, locked_until)
+                      VALUES(:i, :f, :now, :lu)
+                      ON CONFLICT(ip) DO UPDATE SET
+                        fails = excluded.fails,
+                        first_at = CASE WHEN excluded.fails <= 1 THEN excluded.first_at
+                                        ELSE login_throttle.first_at END,
+                        locked_until = excluded.locked_until");
+  $st->bindValue(':i', $ip, SQLITE3_TEXT);
+  $st->bindValue(':f', $fails, SQLITE3_INTEGER);
+  $st->bindValue(':now', now_utc(), SQLITE3_TEXT);
+  $st->bindValue(':lu', $locked, $locked === null ? SQLITE3_NULL : SQLITE3_TEXT);
+  $st->execute();
+}
+
+/** Login riuscito: azzera il conteggio per quell'IP. */
+function login_note_ok(SQLite3 $db, string $ip): void {
+  login_throttle_ensure($db);
+  $st = $db->prepare('DELETE FROM login_throttle WHERE ip = :i');
+  $st->bindValue(':i', $ip, SQLITE3_TEXT);
+  $st->execute();
 }
 
 /**

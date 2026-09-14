@@ -1,0 +1,8 @@
+[Unit]
+Description=snippet - snapshot locale di database e allegati
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+ExecStart=/bin/bash /var/www/html/snippet/bin/snippet_backup.sh

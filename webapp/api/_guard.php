@@ -7,6 +7,8 @@ declare(strict_types=1);
  * uguale a cfg()['ingest_token']. Fallisce con jout() prima di ogni logica.
  */
 
+// Gli endpoint api/ autenticano con bearer token: nessuna sessione PHP.
+define('SNIPPET_NO_SESSION', true);
 require_once __DIR__ . '/../lib.php';
 
 function api_json(array $x, int $code = 200): void {

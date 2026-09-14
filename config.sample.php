@@ -40,6 +40,17 @@ return [
     'correlate_min_score' => 2,   // soglia sotto la quale l'arco non viene salvato
     'correlate_max_links' => 12,  // max archi automatici in uscita per voce
 
+    // --- Isolamento della sessione -------------------------------------
+    // Nome del cookie di sessione: DEVE essere diverso da quello di ogni altra
+    // applicazione PHP ospitata sullo stesso dominio. Con il default `PHPSESSID`
+    // due app condividono lo stesso file di sessione (stesso save_path) e
+    // quindi le stesse chiavi (`uid`, `uname`): autenticarsi su una varrebbe
+    // come autenticarsi sull'altra.
+    'session_name'        => 'SNIPPETSESS',
+    // Path del cookie. Se l'app e' servita in una sottocartella (es. /snippet/)
+    // restringilo a quella: il cookie non viene nemmeno inviato alle altre app.
+    'session_cookie_path' => '/',
+
     // Fuso orario di visualizzazione (i timestamp nel DB sono UTC).
     'timezone'        => 'Europe/Rome',
 
