@@ -25,6 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (trim($raw_val) === '') throw new RuntimeException('Il corpo non puo\' essere vuoto.');
     $dbw = db_rw();
     $res = entry_update($dbw, $eid, $raw_val, current_user());
+    links_fetch_pending($dbw, $eid, 3);   // eventuali link nuovi
     flash_set('ok', 'Voce aggiornata.');
     header('Location: ' . entry_url($res['slug']));
     exit;

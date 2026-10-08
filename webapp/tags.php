@@ -21,29 +21,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $id = (int)($_POST['id'] ?? 0);
       $new = nlp_tag_normalize((string)($_POST['name'] ?? ''));
       if ($id <= 0 || $new === '') throw new RuntimeException('id o nuovo nome non validi.');
+      // Rinominare = fondere nel nome nuovo (creato se serve): cosi' anche gli
+      // #hashtag nel testo vengono riscritti e il vecchio nome diventa alias.
+      $kind = (string)$db->querySingle('SELECT kind FROM tags WHERE id=' . $id);
       $target = (int)$db->querySingle('SELECT id FROM tags WHERE name=' . "'" . SQLite3::escapeString($new) . "'");
-      if ($target > 0 && $target !== $id) {
-        // merge id -> target
-        $st = $db->prepare(
-          'INSERT OR IGNORE INTO entry_tags(entry_id, tag_id, auto, weight)
-           SELECT entry_id, :tgt, auto, weight FROM entry_tags WHERE tag_id = :src'
-        );
-        $st->bindValue(':tgt', $target, SQLITE3_INTEGER);
-        $st->bindValue(':src', $id, SQLITE3_INTEGER);
-        $st->execute();
-        $db->exec('DELETE FROM tags WHERE id=' . $id);
-        flash_set('ok', 'Tag unito in «' . $new . '».');
-      } else {
-        $st = $db->prepare('UPDATE tags SET name=:n WHERE id=:i');
-        $st->bindValue(':n', $new, SQLITE3_TEXT);
-        $st->bindValue(':i', $id, SQLITE3_INTEGER);
-        $st->execute();
-        flash_set('ok', 'Tag rinominato in «' . $new . '».');
+      $existed = $target > 0;
+      if (!$existed) $target = nlp_tag_id($db, $new, $kind === 'auto' ? 'auto' : 'manual');
+      if ($target !== $id) {
+        $db->exec('BEGIN');
+        $n = tag_merge($db, $id, $target, current_user());
+        $db->exec('COMMIT');
+        flash_set('ok', ($existed ? 'Tag unito in «' : 'Tag rinominato in «') . $new . "» ($n voci).");
       }
+    } elseif ($action === 'merge') {
+      $from = (int)($_POST['from'] ?? 0);
+      $into = (int)($_POST['into'] ?? 0);
+      $db->exec('BEGIN');
+      $n = tag_merge($db, $from, $into, current_user());
+      $db->exec('COMMIT');
+      flash_set('ok', "Tag fusi ($n voci aggiornate).");
+    } elseif ($action === 'merge_dismiss') {
+      $pair = (string)($_POST['pair'] ?? '');
+      $list = json_decode((string)kv_get($db, 'tag_merge_dismissed', '[]'), true) ?: [];
+      if ($pair !== '' && !in_array($pair, $list, true)) $list[] = $pair;
+      kv_set($db, 'tag_merge_dismissed', json_encode(array_values($list), JSON_UNESCAPED_UNICODE));
+      flash_set('ok', 'Ok, non lo propongo piu\'.');
     } elseif ($action === 'delete') {
       $id = (int)($_POST['id'] ?? 0);
-      $db->exec('DELETE FROM tags WHERE id=' . $id);
-      flash_set('ok', 'Tag eliminato.');
+      $db->exec('BEGIN');
+      $n = tag_delete($db, $id, current_user());   // toglie anche gli #hashtag dal testo
+      $db->exec('COMMIT');
+      flash_set('ok', "Tag eliminato da $n voci.");
     } elseif ($action === 'kind') {
       $id = (int)($_POST['id'] ?? 0);
       $to = (string)($_POST['to'] ?? '');
@@ -218,6 +226,7 @@ $sw = [];
 $r = $db->query('SELECT word, added_at FROM stopwords_custom ORDER BY word');
 while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $sw[] = $x;
 
+$merges = nlp_tag_merge_candidates($db, 20);
 $n_manual = count(array_filter($tags, fn($t) => $t['kind'] === 'manual'));
 $n_auto = count($tags) - $n_manual;
 ?>
@@ -235,6 +244,32 @@ $n_auto = count($tags) - $n_manual;
 
 <div class="wrap">
   <?php if ($flash): ?><div class="card"><b><?= $flash[0] === 'ok' ? 'OK:' : 'Errore:' ?></b> <?=h((string)$flash[1])?></div><?php endif; ?>
+
+  <?php if ($merges): ?>
+  <div class="card">
+    <b>Possibili doppioni</b>
+    <div class="meta" style="margin-top:4px">Tag che sembrano la stessa cosa. Fondendoli, il vocabolario resta compatto e le
+      correlazioni migliorano; il nome scartato diventa un alias (un futuro <code>#hashtag</code> con quel nome va sul tag tenuto).</div>
+    <?php foreach ($merges as $m): ?>
+      <div class="row" style="margin-top:8px; gap:6px">
+        <span class="small grow"><b><?=h($m['from'])?></b> → <b><?=h($m['into'])?></b> <span class="meta">· <?=h($m['reason'])?> · <?= (int)$m['uses'] ?> voci</span></span>
+        <form method="post" style="display:inline">
+          <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+          <input type="hidden" name="action" value="merge">
+          <input type="hidden" name="from" value="<?= (int)$m['from_id'] ?>">
+          <input type="hidden" name="into" value="<?= (int)$m['into_id'] ?>">
+          <button class="badge" type="submit">⇢ unisci</button>
+        </form>
+        <form method="post" style="display:inline">
+          <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+          <input type="hidden" name="action" value="merge_dismiss">
+          <input type="hidden" name="pair" value="<?=h($m['from'] . '|' . $m['into'])?>">
+          <button class="badge" type="submit">✕ sono diversi</button>
+        </form>
+      </div>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
 
   <div class="card">
     <div class="row" style="justify-content:space-between">

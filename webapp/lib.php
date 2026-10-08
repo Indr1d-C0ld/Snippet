@@ -11,7 +11,10 @@ declare(strict_types=1);
 function cfg(): array {
   static $c = null;
   if ($c === null) {
-    $f = dirname(__DIR__) . '/config.php';
+    // SNIPPET_CONFIG: file di configurazione alternativo (test automatici,
+    // script CLI su un DB di prova). Mai impostata in produzione.
+    $env = getenv('SNIPPET_CONFIG');
+    $f = ($env !== false && $env !== '') ? $env : dirname(__DIR__) . '/config.php';
     if (!is_file($f)) {
       $f = __DIR__ . '/config.php'; // layout piatto (webapp servita dalla root)
     }
@@ -43,18 +46,74 @@ function snippet_db_ensure(): void {
   $done = true;
 
   $path = cfg()['db_path'];
-  if (is_file($path) && filesize($path) > 0) return;
-
-  $dir = dirname($path);
-  if (!is_dir($dir)) @mkdir($dir, 0775, true);
+  $fresh = !(is_file($path) && filesize($path) > 0);
+  if ($fresh) {
+    $dir = dirname($path);
+    if (!is_dir($dir)) @mkdir($dir, 0775, true);
+  }
 
   $db = new SQLite3($path, SQLITE3_OPEN_READWRITE | SQLITE3_OPEN_CREATE);
   $db->busyTimeout(5000);
-  $sql = schema_path();
-  if ($sql !== null) {
-    $db->exec((string)file_get_contents($sql));
+  $db->enableExceptions(true);
+  if ($fresh) {
+    $sql = schema_path();
+    if ($sql !== null) $db->exec((string)file_get_contents($sql));
   }
+  db_migrate($db);
   $db->close();
+}
+
+/**
+ * Porta lo schema all'ultima versione applicando, in ordine e ognuna nella
+ * sua transazione, le migrazioni di migrations.php con numero maggiore di
+ * PRAGMA user_version. schema.sql e' la base (versione 1): ogni modifica
+ * successiva vive SOLO in migrations.php, cosi' un'installazione nuova e una
+ * esistente arrivano allo stesso schema per la stessa strada.
+ * Costo a regime: una lettura di user_version per richiesta.
+ */
+function db_migrate(SQLite3 $db): int {
+  $cur = (int)$db->querySingle('PRAGMA user_version');
+  $all = require __DIR__ . '/migrations.php';
+  $target = $all ? max(array_keys($all)) : 1;
+  if ($cur >= $target) return $cur;
+
+  ksort($all);
+  foreach ($all as $v => $step) {
+    if ($v <= $cur) continue;
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+      // ricontrollo dentro il lock: un'altra richiesta puo' averla appena fatta
+      if ((int)$db->querySingle('PRAGMA user_version') >= $v) { $db->exec('COMMIT'); continue; }
+      if (is_callable($step)) $step($db); else $db->exec((string)$step);
+      $db->exec('PRAGMA user_version = ' . (int)$v);
+      $db->exec('COMMIT');
+    } catch (Throwable $e) {
+      $db->exec('ROLLBACK');
+      throw new RuntimeException("migrazione $v fallita: " . $e->getMessage(), 0, $e);
+    }
+  }
+  return (int)$db->querySingle('PRAGMA user_version');
+}
+
+/** Valore della tabella kv (impostazioni e stato persistente), o $def. */
+function kv_get(SQLite3 $db, string $key, ?string $def = null): ?string {
+  $st = $db->prepare('SELECT value FROM kv WHERE key = :k');
+  $st->bindValue(':k', $key, SQLITE3_TEXT);
+  $r = $st->execute()->fetchArray(SQLITE3_ASSOC);
+  return $r ? (string)$r['value'] : $def;
+}
+
+function kv_set(SQLite3 $db, string $key, ?string $val): void {
+  if ($val === null) {
+    $st = $db->prepare('DELETE FROM kv WHERE key = :k');
+    $st->bindValue(':k', $key, SQLITE3_TEXT);
+  } else {
+    $st = $db->prepare("INSERT INTO kv(key, value, updated_at) VALUES(:k, :v, datetime('now'))
+                        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at");
+    $st->bindValue(':k', $key, SQLITE3_TEXT);
+    $st->bindValue(':v', $val, SQLITE3_TEXT);
+  }
+  $st->execute();
 }
 
 function db_ro(): SQLite3 {
@@ -270,15 +329,119 @@ function login_note_ok(SQLite3 $db, string $ip): void {
   $st->execute();
 }
 
+/* ----------------  Accesso persistente ("Ricordami")  ----------------
+ *
+ * Il cookie SNIPPETREM porta "selector:validator". Nel DB (auth_tokens) c'e'
+ * solo lo SHA-256 del validator: chi legge il database non puo' rifabbricare
+ * il cookie. A ogni uso il validator ruota (un cookie rubato e gia' usato
+ * dal legittimo proprietario smette di valere); un selector valido con un
+ * validator sbagliato e' un indizio di furto e invalida quel dispositivo.
+ * Durata: REMEMBER_DAYS dall'ultimo utilizzo. Revocabile da profile.php.
+ */
+
+const REMEMBER_COOKIE = 'SNIPPETREM';
+const REMEMBER_DAYS = 30;
+
+function remember_set_cookie(string $value, int $expires): void {
+  if (headers_sent()) return;
+  $https = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off')
+        || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443;
+  setcookie(REMEMBER_COOKIE, $value, [
+    'expires' => $expires, 'path' => (string)(cfg()['session_cookie_path'] ?? '/'),
+    'httponly' => true, 'secure' => $https, 'samesite' => 'Lax',
+  ]);
+}
+
+/** Emette un token per questo dispositivo e imposta il cookie. */
+function remember_issue(SQLite3 $db, int $uid): void {
+  $sel = bin2hex(random_bytes(9));
+  $val = bin2hex(random_bytes(32));
+  $exp = time() + REMEMBER_DAYS * 86400;
+  $st = $db->prepare('INSERT INTO auth_tokens(selector, validator_hash, user_id, user_agent, ip, expires_at, last_used_at)
+                      VALUES(:s, :h, :u, :a, :i, :e, datetime(\'now\'))');
+  $st->bindValue(':s', $sel, SQLITE3_TEXT);
+  $st->bindValue(':h', hash('sha256', $val), SQLITE3_TEXT);
+  $st->bindValue(':u', $uid, SQLITE3_INTEGER);
+  $st->bindValue(':a', mb_substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 200, 'UTF-8'), SQLITE3_TEXT);
+  $st->bindValue(':i', login_client_ip(), SQLITE3_TEXT);
+  $st->bindValue(':e', gmdate('Y-m-d H:i:s', $exp), SQLITE3_TEXT);
+  $st->execute();
+  remember_set_cookie($sel . ':' . $val, $exp);
+}
+
+/** Selector del cookie di questo dispositivo ('' se assente/malformato). */
+function remember_selector(): string {
+  $c = (string)($_COOKIE[REMEMBER_COOKIE] ?? '');
+  return preg_match('/^([a-f0-9]{18}):[a-f0-9]{64}$/', $c, $m) ? $m[1] : '';
+}
+
+/**
+ * Prova a ricostruire la sessione dal cookie. Ritorna l'id utente o 0.
+ * Ruota il validator a ogni uso riuscito.
+ */
+function remember_login(): int {
+  $c = (string)($_COOKIE[REMEMBER_COOKIE] ?? '');
+  if (!preg_match('/^([a-f0-9]{18}):([a-f0-9]{64})$/', $c, $m)) return 0;
+  try {
+    $db = db_rw();
+    $st = $db->prepare('SELECT id, user_id, validator_hash, expires_at FROM auth_tokens WHERE selector = :s');
+    $st->bindValue(':s', $m[1], SQLITE3_TEXT);
+    $t = $st->execute()->fetchArray(SQLITE3_ASSOC);
+    if (!$t || strtotime($t['expires_at'] . ' UTC') < time()) {
+      if ($t) $db->exec('DELETE FROM auth_tokens WHERE id = ' . (int)$t['id']);
+      remember_set_cookie('', time() - 3600);
+      return 0;
+    }
+    if (!hash_equals((string)$t['validator_hash'], hash('sha256', $m[2]))) {
+      $db->exec('DELETE FROM auth_tokens WHERE id = ' . (int)$t['id']);   // possibile furto
+      remember_set_cookie('', time() - 3600);
+      return 0;
+    }
+    $val = bin2hex(random_bytes(32));
+    $exp = time() + REMEMBER_DAYS * 86400;
+    $st = $db->prepare("UPDATE auth_tokens SET validator_hash = :h, expires_at = :e,
+                        last_used_at = datetime('now'), ip = :i WHERE id = :id");
+    $st->bindValue(':h', hash('sha256', $val), SQLITE3_TEXT);
+    $st->bindValue(':e', gmdate('Y-m-d H:i:s', $exp), SQLITE3_TEXT);
+    $st->bindValue(':i', login_client_ip(), SQLITE3_TEXT);
+    $st->bindValue(':id', (int)$t['id'], SQLITE3_INTEGER);
+    $st->execute();
+    remember_set_cookie($m[1] . ':' . $val, $exp);
+    return (int)$t['user_id'];
+  } catch (Throwable $e) {
+    return 0;
+  }
+}
+
+/** Revoca il token di questo dispositivo (logout). */
+function remember_forget(): void {
+  $sel = remember_selector();
+  if ($sel !== '') {
+    try {
+      $st = db_rw()->prepare('DELETE FROM auth_tokens WHERE selector = :s');
+      $st->bindValue(':s', $sel, SQLITE3_TEXT);
+      $st->execute();
+    } catch (Throwable $e) { /* niente */ }
+  }
+  remember_set_cookie('', time() - 3600);
+}
+
 /**
  * Riga dell'utente autenticato (id, username, role, disabled) o null.
  * Riallinea la sessione a ogni richiesta e la invalida se l'utente e' stato
- * disabilitato o rimosso.
+ * disabilitato o rimosso. Senza sessione, prova il cookie "Ricordami".
  */
 function auth_user(): ?array {
   static $cache = null;
   if ($cache !== null) return $cache ?: null;
 
+  if (empty($_SESSION['uid']) && session_status() === PHP_SESSION_ACTIVE) {
+    $uid = remember_login();
+    if ($uid > 0) {
+      session_regenerate_id(true);
+      $_SESSION['uid'] = $uid;
+    }
+  }
   if (empty($_SESSION['uid'])) { $cache = false; return null; }
   try {
     $db = db_ro();

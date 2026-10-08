@@ -171,6 +171,50 @@ function bar_row(string $label, int $val, int $max, string $extra = ''): string 
     </div>
   </div>
 
+  <?php
+    /* calendario dell'ultimo anno: una colonna per settimana (lun-dom),
+       ogni giorno cliccabile (apre le voci di quel giorno) */
+    $cal_end = new DateTime('now', tzobj());
+    $cal_start = (clone $cal_end)->modify('-364 days')->modify('monday this week');
+    $cal_max = $days ? max($days) : 0;
+    $cell = 12; $gap = 2;
+    $weeks = (int)ceil(((int)$cal_start->diff($cal_end)->format('%a') + 1) / 7);
+    $svg_w = 22 + $weeks * ($cell + $gap); $svg_h = 16 + 7 * ($cell + $gap);
+    $mesi = ['', 'gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+  ?>
+  <div class="card">
+    <b>Il tuo anno</b>
+    <div class="meta" style="margin-top:4px">un quadrato per giorno · più scuro = più voci · clicca un giorno per aprirlo</div>
+    <div style="overflow-x:auto; margin-top:8px">
+      <svg width="<?=$svg_w?>" height="<?=$svg_h?>" role="img" aria-label="calendario delle voci">
+        <?php
+          $d = clone $cal_start; $lastm = 0;
+          for ($w = 0; $w < $weeks; $w++) {
+            for ($wd = 0; $wd < 7; $wd++) {
+              if ($d > $cal_end) break 2;
+              $k = $d->format('Y-m-d'); $n = $days[$k] ?? 0;
+              $x = 22 + $w * ($cell + $gap); $y = 16 + $wd * ($cell + $gap);
+              if ($wd === 0 && (int)$d->format('n') !== $lastm) {
+                $lastm = (int)$d->format('n');
+                echo '<text x="' . $x . '" y="10" font-size="9" fill="var(--fg-muted)">' . $mesi[$lastm] . '</text>';
+              }
+              $op = $n > 0 && $cal_max > 0 ? round(0.25 + 0.75 * $n / $cal_max, 2) : 1;
+              $fill = $n > 0 ? 'var(--accent)' : 'var(--bg)';
+              $tip = h(fmt_day($k)) . ' — ' . $n . ($n === 1 ? ' voce' : ' voci');
+              $rect = '<rect x="' . $x . '" y="' . $y . '" width="' . $cell . '" height="' . $cell . '" rx="2" fill="' . $fill
+                    . '" fill-opacity="' . $op . '" stroke="var(--border)" stroke-width="0.5"><title>' . $tip . '</title></rect>';
+              echo $n > 0 ? '<a href="search.php?q=' . h(urlencode('da:' . fmt_day($k) . ' a:' . fmt_day($k))) . '">' . $rect . '</a>' : $rect;
+              $d->modify('+1 day');
+            }
+          }
+          foreach ([0 => 'lun', 2 => 'mer', 4 => 'ven'] as $wd => $lab) {
+            echo '<text x="0" y="' . (16 + $wd * ($cell + $gap) + 10) . '" font-size="9" fill="var(--fg-muted)">' . $lab . '</text>';
+          }
+        ?>
+      </svg>
+    </div>
+  </div>
+
   <div class="card">
     <b>Attività — ultimi 12 mesi</b>
     <hr>

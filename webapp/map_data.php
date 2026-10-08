@@ -21,19 +21,19 @@ $from = (string)($_GET['from'] ?? '');
 $to   = (string)($_GET['to'] ?? '');
 $from = preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) ? $from : '';
 $to   = preg_match('/^\d{4}-\d{2}-\d{2}$/', $to) ? $to : '';
+// punteggi in 0..1 (dal 08/10/2026); gli archi salvati superano gia' la soglia
 $minscore = isset($_GET['minscore']) && is_numeric($_GET['minscore'])
-  ? max(0, (float)$_GET['minscore'])
-  : (float)($C['correlate_min_score'] ?? 2);
+  ? min(1, max(0, (float)$_GET['minscore'])) : 0.0;
 $archived = (int)($_GET['archived'] ?? 0) === 1;
 $limit = isset($_GET['limit']) && ctype_digit((string)$_GET['limit'])
   ? min(1500, max(10, (int)$_GET['limit'])) : 500;
 
-$ALL_KINDS = ['manual', 'keyword', 'tag', 'temporal'];
+$ALL_KINDS = ['manual', 'keyword', 'semantic', 'tag', 'person', 'temporal'];
 $kinds = array_values(array_intersect(
   $ALL_KINDS,
   array_filter(array_map('trim', explode(',', (string)($_GET['kinds'] ?? ''))))
 ));
-if (!$kinds) $kinds = $ALL_KINDS;
+if (!$kinds) $kinds = array_values(array_diff($ALL_KINDS, ['temporal']));
 
 /* -------- nodi -------- */
 $where = [];
@@ -61,7 +61,7 @@ if ($tag !== '') {
 $wsql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 $sql = "
   SELECT DISTINCT e.id, e.slug, e.title, e.body, e.created_at,
-         e.pinned, e.archived, e.word_count
+         e.pinned, e.archived, e.word_count, e.cluster
   FROM entries e $join
   $wsql
   ORDER BY e.created_at DESC
@@ -89,6 +89,7 @@ while ($x = $r->fetchArray(SQLITE3_ASSOC)) {
     'arch'   => (int)$x['archived'] === 1,
     'deg'    => 0,
     'tags'   => [],
+    'cluster' => $x['cluster'] !== null ? (int)$x['cluster'] : null,
   ];
 }
 
@@ -138,7 +139,12 @@ foreach ($edges as $e) {
   $nodes[$e['d']]['deg']++;
 }
 
+$themes = [];
+$tr = $db->query('SELECT id, label, size FROM clusters ORDER BY id');
+while ($tr && ($x = $tr->fetchArray(SQLITE3_ASSOC))) $themes[] = ['id' => (int)$x['id'], 'label' => (string)$x['label'], 'size' => (int)$x['size']];
+
 echo json_encode([
+  'themes' => $themes,
   'meta' => [
     'nodes'    => count($nodes),
     'edges'    => count($edges),

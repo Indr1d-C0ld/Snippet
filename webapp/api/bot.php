@@ -12,11 +12,14 @@ declare(strict_types=1);
  * La creazione di voci resta su ingest.php (gestisce anche gli allegati);
  * qui: recent, search, entry, day, random, tags, tag, stats, saved_*,
  *      update, set, delete, note_add, note_del, tag_add, tag_del, sw_add,
- *      rebuild, whoami.
+ *      rebuild, whoami; dal 08/10/2026 anche persons, person, person_add,
+ *      person_ignore, themes, theme, semantic, similar, hints, append, by_tg,
+ *      transcript, links_fetch, memories, digest, idle, settings_get/set.
  */
 
 require __DIR__ . '/_guard.php';
 require __DIR__ . '/../lib_nlp.php';
+require __DIR__ . '/../lib_search.php';
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
   api_json(['ok' => false, 'error' => 'POST richiesto'], 405);
@@ -79,7 +82,7 @@ function b_entry_full(SQLite3 $db, int $eid): array {
   // correlati (archi non manuali, doppia direzione, dedup sull'altra voce)
   $rel = [];
   $st = $db->prepare("SELECT CASE WHEN src_id=:id THEN dst_id ELSE src_id END o, kind, score
-                      FROM links WHERE (src_id=:id OR dst_id=:id) AND kind<>'manual'");
+                      FROM links WHERE (src_id=:id OR dst_id=:id) AND kind NOT IN ('manual','temporal')");
   $st->bindValue(':id', $eid, SQLITE3_INTEGER);
   $rr = $st->execute();
   while ($x = $rr->fetchArray(SQLITE3_ASSOC)) {
@@ -111,7 +114,7 @@ function b_entry_full(SQLite3 $db, int $eid): array {
   $related = [];
   foreach ($rel as $oid => $meta) {
     if (!isset($brief[$oid])) continue;
-    $related[] = $brief[$oid] + ['kind' => $meta['kind'], 'score' => (int)round($meta['score'])];
+    $related[] = $brief[$oid] + ['kind' => link_kind_label($meta['kind']), 'score' => (int)round($meta['score'] * 100)];
   }
   $map = static fn($arr) => array_values(array_filter(array_map(static fn($x) => $brief[$x] ?? null, $arr)));
 
@@ -122,10 +125,16 @@ function b_entry_full(SQLite3 $db, int $eid): array {
                 'created' => fmt_dt((string)$x['created_at'])];
   }
   $att = [];
-  $r = $db->query('SELECT id, kind, orig_name, bytes FROM attachments WHERE entry_id = ' . $eid . ' ORDER BY id');
+  $r = $db->query('SELECT id, kind, orig_name, bytes, transcript_status FROM attachments WHERE entry_id = ' . $eid . ' ORDER BY id');
   while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) {
     $att[] = ['id' => (int)$x['id'], 'kind' => (string)$x['kind'],
-              'name' => (string)($x['orig_name'] ?: $x['kind']), 'bytes' => (int)$x['bytes']];
+              'name' => (string)($x['orig_name'] ?: $x['kind']), 'bytes' => (int)$x['bytes'],
+              'transcript' => (string)($x['transcript_status'] ?? '')];
+  }
+  $links = [];
+  foreach (links_for_entry($db, $eid) as $l) {
+    $links[] = ['url' => (string)$l['url'], 'status' => (string)$l['status'],
+                'title' => (string)($l['title'] ?? ''), 'site' => (string)($l['site'] ?? '')];
   }
 
   // navigazione cronologica (non archiviate)
@@ -134,7 +143,15 @@ function b_entry_full(SQLite3 $db, int $eid): array {
   $next = $db->querySingle("SELECT slug FROM entries WHERE archived=0 AND created_at > '"
       . SQLite3::escapeString((string)$e['created_at']) . "' ORDER BY created_at ASC LIMIT 1");
 
+  $persons = [];
+  $r = $db->query('SELECT p.id, p.name FROM entry_persons ep JOIN persons p ON p.id = ep.person_id
+                   WHERE ep.entry_id = ' . $eid . ' ORDER BY ep.mentions DESC, p.name');
+  while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $persons[] = ['id' => (int)$x['id'], 'name' => (string)$x['name']];
+  $theme = $e['cluster'] !== null ? $db->querySingle('SELECT id, label FROM clusters WHERE id = ' . (int)$e['cluster'], true) : null;
+
   return [
+    'persons' => $persons,
+    'theme' => $theme ? ['id' => (int)$theme['id'], 'label' => (string)$theme['label']] : null,
     'entry' => [
       'id' => (int)$e['id'], 'slug' => (string)$e['slug'],
       'title' => (string)($e['title'] ?? ''), 'label' => b_label($e),
@@ -152,8 +169,33 @@ function b_entry_full(SQLite3 $db, int $eid): array {
     'mentions_in' => $map($m_in),
     'notes' => $notes,
     'attachments' => $att,
+    'links' => $links,
     'nav' => ['prev' => $prev ?: null, 'next' => $next ?: null],
   ];
+}
+
+/** Estremi UTC [inizio, fine] di un giorno locale 'AAAA-MM-GG'. */
+function b_day_bounds(string $ymd): array {
+  $s = (new DateTime($ymd . ' 00:00:00', tzobj()))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+  $e = (new DateTime($ymd . ' 23:59:59', tzobj()))->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+  return [$s, $e];
+}
+
+/** Impostazioni del bot (tabella kv, prefisso "bot."), con i default. */
+const BOT_SETTINGS = [
+  'memories'    => '1',        // ricordi: "un mese fa / un anno fa scrivevi..."
+  'memories_at' => '09:00',
+  'digest'      => '1',        // riepilogo settimanale
+  'digest_at'   => '7 20:00',  // giorno ISO (1 = lunedi', 7 = domenica) e ora
+  'nudge'       => '1',        // promemoria dopo qualche giorno di silenzio
+  'nudge_days'  => '4',
+  'nudge_at'    => '21:00',
+];
+
+function b_settings(SQLite3 $db): array {
+  $out = [];
+  foreach (BOT_SETTINGS as $k => $def) $out[$k] = kv_get($db, 'bot.' . $k, $def);
+  return $out;
 }
 
 function b_list(SQLite3 $db, string $sql, array $bind = []): array {
@@ -180,33 +222,19 @@ try {
   }
 
   case 'search': {
+    // motore condiviso col web: filtri nel testo (tag: persona: da: a: tema:
+    // fonte:) e modalita' mista parole + significato se il servizio ML c'e'
     $q = trim((string)($in['q'] ?? ''));
     if ($q === '') api_json(['ok' => false, 'error' => 'query vuota'], 400);
     $per = max(1, min(20, (int)($in['per'] ?? 6)));
     $page = max(1, (int)($in['page'] ?? 1));
-    $cond = ['entries_fts MATCH :q', 'e.archived = 0'];
-    $bind = [':q' => [$q, SQLITE3_TEXT]];
-    $tag = nlp_tag_normalize((string)($in['tag'] ?? ''));
-    if ($tag !== '') {
-      $cond[] = 'e.id IN (SELECT et.entry_id FROM entry_tags et JOIN tags t ON t.id=et.tag_id WHERE t.name=:tag)';
-      $bind[':tag'] = [$tag, SQLITE3_TEXT];
-    }
-    $w = implode(' AND ', $cond);
-    try {
-      $cs = $db->prepare("SELECT COUNT(*) c FROM entries_fts JOIN entries e ON e.id=entries_fts.rowid WHERE $w");
-      foreach ($bind as $k => [$v, $t]) $cs->bindValue($k, $v, $t);
-      $total = (int)$cs->execute()->fetchArray(SQLITE3_ASSOC)['c'];
-      $pages = max(1, (int)ceil($total / $per));
-      if ($page > $pages) $page = $pages;
-      $sql = "SELECT e.* FROM entries_fts JOIN entries e ON e.id=entries_fts.rowid
-              WHERE $w ORDER BY bm25(entries_fts) LIMIT :lim OFFSET :off";
-      $bind[':lim'] = [$per, SQLITE3_INTEGER];
-      $bind[':off'] = [($page - 1) * $per, SQLITE3_INTEGER];
-      api_json(['ok' => true, 'q' => $q, 'total' => $total, 'page' => $page, 'pages' => $pages,
-                'items' => b_list($db, $sql, $bind)]);
-    } catch (Throwable $e) {
-      api_json(['ok' => false, 'error' => 'query FTS non valida: ' . $e->getMessage()], 400);
-    }
+    $res = search_run($db, $q, (string)($in['mode'] ?? 'auto'), $page, $per);
+    $pages = max(1, (int)ceil($res['total'] / $per));
+    $label = ['misto' => 'parole + significato', 'parole' => 'parole', 'significato' => 'significato', 'filtri' => 'filtri'][$res['mode']] ?? '';
+    api_json(['ok' => true, 'q' => $q, 'total' => $res['total'], 'page' => min($page, $pages), 'pages' => $pages,
+              'filters' => trim($label . ($res['parsed']['desc'] !== '' ? ' · ' . $res['parsed']['desc'] : '')
+                                 . ($res['note'] !== '' ? ' · ' . $res['note'] : '')),
+              'items' => array_map('b_row', $res['items'])]);
   }
 
   case 'entry':
@@ -426,6 +454,236 @@ try {
   case 'rebuild': {
     $res = graph_rebuild($db);
     api_json(['ok' => true] + $res);
+  }
+
+  /* --------------------------- persone --------------------------- */
+
+  case 'persons': {
+    $rows = [];
+    $r = $db->query('SELECT p.id, p.name, COUNT(ep.entry_id) n, MAX(e.created_at) last FROM persons p
+                     LEFT JOIN entry_persons ep ON ep.person_id = p.id LEFT JOIN entries e ON e.id = ep.entry_id
+                     GROUP BY p.id ORDER BY n DESC, p.name COLLATE NOCASE');
+    while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) {
+      $rows[] = ['id' => (int)$x['id'], 'name' => (string)$x['name'], 'count' => (int)$x['n'],
+                 'last' => $x['last'] ? fmt_dt((string)$x['last'], false) : ''];
+    }
+    api_json(['ok' => true, 'persons' => $rows]);
+  }
+
+  case 'person': {
+    $q = trim((string)($in['name'] ?? ''));
+    $pid = (int)($in['id'] ?? 0);
+    if ($pid <= 0 && $q !== '') {
+      $st = $db->prepare("SELECT id FROM persons WHERE name = :n COLLATE NOCASE
+                          OR (',' || replace(aliases, ', ', ',') || ',') LIKE '%,' || :n || ',%' COLLATE NOCASE LIMIT 1");
+      $st->bindValue(':n', $q, SQLITE3_TEXT);
+      $pid = (int)($st->execute()->fetchArray(SQLITE3_NUM)[0] ?? 0);
+    }
+    $p = $pid > 0 ? $db->querySingle('SELECT id, name, aliases FROM persons WHERE id = ' . $pid, true) : null;
+    if (!$p) api_json(['ok' => false, 'error' => 'persona non trovata: ' . $q], 404);
+    $per = max(1, min(20, (int)($in['per'] ?? 8)));
+    $page = max(1, (int)($in['page'] ?? 1));
+    $total = (int)$db->querySingle('SELECT COUNT(*) FROM entry_persons WHERE person_id = ' . $pid);
+    $pages = max(1, (int)ceil($total / $per));
+    if ($page > $pages) $page = $pages;
+    $items = b_list($db, "SELECT e.* FROM entry_persons ep JOIN entries e ON e.id = ep.entry_id
+                          WHERE ep.person_id = $pid ORDER BY e.created_at DESC LIMIT :l OFFSET :o",
+      [':l' => [$per, SQLITE3_INTEGER], ':o' => [($page - 1) * $per, SQLITE3_INTEGER]]);
+    $with = [];
+    $r = $db->query("SELECT p2.name, COUNT(*) c FROM entry_persons a JOIN entry_persons b
+                     ON b.entry_id = a.entry_id AND b.person_id <> a.person_id JOIN persons p2 ON p2.id = b.person_id
+                     WHERE a.person_id = $pid GROUP BY p2.id ORDER BY c DESC LIMIT 6");
+    while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $with[] = (string)$x['name'];
+    api_json(['ok' => true, 'id' => $pid, 'name' => (string)$p['name'], 'aliases' => (string)$p['aliases'],
+              'total' => $total, 'page' => $page, 'pages' => $pages, 'items' => $items, 'with' => $with]);
+  }
+
+  case 'person_add': {
+    $name = trim((string)($in['name'] ?? ''));
+    $id = person_add($db, $name, (string)($in['aliases'] ?? ''));
+    $n = persons_reindex($db);
+    graph_rebuild($db);
+    api_json(['ok' => true, 'id' => $id, 'name' => $name, 'entries' => $n]);
+  }
+
+  case 'person_ignore': {
+    person_ignore($db, (string)($in['name'] ?? ''));
+    api_json(['ok' => true]);
+  }
+
+  /* ----------------------------- temi ----------------------------- */
+
+  case 'themes': {
+    $rows = [];
+    $r = $db->query("SELECT c.id, c.label, c.size, MAX(e.created_at) last,
+                       SUM(e.created_at >= datetime('now', '-14 days')) recent
+                     FROM clusters c JOIN entries e ON e.cluster = c.id
+                     GROUP BY c.id ORDER BY recent DESC, c.size DESC");
+    while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) {
+      $rows[] = ['id' => (int)$x['id'], 'label' => (string)$x['label'], 'size' => (int)$x['size'],
+                 'recent' => (int)$x['recent'], 'last' => fmt_dt((string)$x['last'], false)];
+    }
+    api_json(['ok' => true, 'themes' => $rows]);
+  }
+
+  case 'theme': {
+    $tid = (int)($in['id'] ?? 0);
+    $t = $db->querySingle('SELECT id, label, size FROM clusters WHERE id = ' . $tid, true);
+    if (!$t) api_json(['ok' => false, 'error' => 'tema non trovato (i temi si ricalcolano)'], 404);
+    api_json(['ok' => true, 'id' => $tid, 'label' => (string)$t['label'], 'items' => b_list($db,
+      "SELECT * FROM entries WHERE cluster = $tid ORDER BY created_at DESC LIMIT 20")]);
+  }
+
+  /* -------------------- significato e suggerimenti -------------------- */
+
+  case 'semantic': {
+    $q = trim((string)($in['q'] ?? ''));
+    if ($q === '') api_json(['ok' => false, 'error' => 'query vuota'], 400);
+    $hits = ml_semantic_search($db, $q, (int)($in['n'] ?? 8));
+    if ($hits === null) api_json(['ok' => false, 'error' => 'ricerca per significato non disponibile (servizio ML spento)'], 503);
+    $items = [];
+    foreach ($hits as $id => $cos) {
+      $x = $db->querySingle('SELECT * FROM entries WHERE id = ' . (int)$id, true);
+      if ($x && (int)$x['archived'] === 0) $items[] = b_row($x);
+    }
+    api_json(['ok' => true, 'q' => $q, 'items' => $items]);
+  }
+
+  case 'similar': {
+    $id = b_resolve($db, $in['ref'] ?? '');
+    $items = [];
+    foreach (entry_semantic_neighbors($db, $id, 8) as $o => $cos) {
+      $x = $db->querySingle('SELECT * FROM entries WHERE id = ' . (int)$o, true);
+      if ($x) $items[] = b_row($x);
+    }
+    api_json(['ok' => true, 'items' => $items]);
+  }
+
+  /* ------------------------- testo e allegati ------------------------- */
+
+  case 'append': {
+    $id = b_resolve($db, $in['ref'] ?? '');
+    $res = entry_append($db, $id, (string)($in['text'] ?? ''), $user);
+    api_json(['ok' => true, 'hints' => array_intersect_key($res, ['candidates' => 1, 'suggest' => 1])] + b_entry_full($db, $id));
+  }
+
+  case 'by_tg': {
+    $st = $db->prepare('SELECT slug FROM entries WHERE tg_chat_id = :c AND tg_message_id = :m');
+    $st->bindValue(':c', (int)($in['chat_id'] ?? 0), SQLITE3_INTEGER);
+    $st->bindValue(':m', (int)($in['message_id'] ?? 0), SQLITE3_INTEGER);
+    $slug = $st->execute()->fetchArray(SQLITE3_NUM)[0] ?? null;
+    if ($slug === null) api_json(['ok' => false, 'error' => 'nessuna voce per quel messaggio'], 404);
+    api_json(['ok' => true, 'slug' => (string)$slug]);
+  }
+
+  case 'transcript': {
+    // att_id esplicito, oppure il primo vocale/audio in attesa della voce
+    $aid = (int)($in['att_id'] ?? 0);
+    if ($aid <= 0) {
+      $id = b_resolve($db, $in['ref'] ?? '');
+      $aid = (int)$db->querySingle("SELECT id FROM attachments WHERE entry_id = $id AND kind IN ('voice','audio')
+                                    ORDER BY (transcript_status = 'pending') DESC, id LIMIT 1");
+    }
+    if ($aid <= 0) api_json(['ok' => false, 'error' => 'nessun vocale da trascrivere'], 404);
+    if (!empty($in['error'])) {
+      $db->exec("UPDATE attachments SET transcript_status = 'error' WHERE id = " . $aid);
+      api_json(['ok' => true, 'marked' => 'error']);
+    }
+    $db->exec('BEGIN');
+    $res = attachment_transcript($db, $aid, (string)($in['text'] ?? ''), $user);
+    $db->exec('COMMIT');
+    api_json(['ok' => true, 'hints' => array_intersect_key($res, ['candidates' => 1, 'suggest' => 1])] + b_entry_full($db, (int)$res['id']));
+  }
+
+  case 'links_fetch': {
+    $id = isset($in['ref']) ? b_resolve($db, $in['ref']) : null;
+    api_json(['ok' => true] + links_fetch_pending($db, $id));
+  }
+
+  /* ------------------- ricordi, digest, promemoria ------------------- */
+
+  case 'memories': {
+    $today = new DateTime('now', tzobj());
+    $periods = ['una settimana fa' => '-7 days', 'un mese fa' => '-1 month', 'tre mesi fa' => '-3 months',
+                'sei mesi fa' => '-6 months', 'un anno fa' => '-1 year'];
+    for ($y = 2; $y <= 10; $y++) $periods["$y anni fa"] = "-$y years";
+    $out = [];
+    foreach ($periods as $label => $mod) {
+      $d = (clone $today)->modify($mod)->format('Y-m-d');
+      [$a, $b] = b_day_bounds($d);
+      $items = b_list($db, 'SELECT * FROM entries WHERE archived = 0 AND created_at BETWEEN :a AND :b ORDER BY created_at',
+                      [':a' => [$a, SQLITE3_TEXT], ':b' => [$b, SQLITE3_TEXT]]);
+      if ($items) $out[] = ['label' => $label, 'date' => fmt_day($d), 'items' => $items];
+    }
+    api_json(['ok' => true, 'groups' => $out]);
+  }
+
+  case 'digest': {
+    $days = max(1, min(31, (int)($in['days'] ?? 7)));
+    $since = gmdate('Y-m-d H:i:s', time() - $days * 86400);
+    $items = b_list($db, 'SELECT * FROM entries WHERE archived = 0 AND created_at >= :s ORDER BY created_at',
+                    [':s' => [$since, SQLITE3_TEXT]]);
+    $ids = array_column($items, 'id');
+    $in_ids = $ids ? implode(',', array_map('intval', $ids)) : '0';
+    $words = (int)$db->querySingle("SELECT COALESCE(SUM(word_count),0) FROM entries WHERE id IN ($in_ids)");
+    $persons = $themes = $tags = [];
+    $r = $db->query("SELECT p.name, COUNT(*) c FROM entry_persons ep JOIN persons p ON p.id = ep.person_id
+                     WHERE ep.entry_id IN ($in_ids) GROUP BY p.id ORDER BY c DESC LIMIT 6");
+    while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $persons[] = ['name' => (string)$x['name'], 'count' => (int)$x['c']];
+    $r = $db->query("SELECT c.id, c.label, COUNT(*) n, c.size FROM entries e JOIN clusters c ON c.id = e.cluster
+                     WHERE e.id IN ($in_ids) GROUP BY c.id ORDER BY n DESC LIMIT 4");
+    while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $themes[] = ['id' => (int)$x['id'], 'label' => (string)$x['label'], 'week' => (int)$x['n'], 'size' => (int)$x['size']];
+    $r = $db->query("SELECT t.name, COUNT(*) c FROM entry_tags et JOIN tags t ON t.id = et.tag_id
+                     WHERE et.entry_id IN ($in_ids) GROUP BY t.id ORDER BY c DESC, t.name LIMIT 8");
+    while ($r && ($x = $r->fetchArray(SQLITE3_ASSOC))) $tags[] = ['name' => (string)$x['name'], 'count' => (int)$x['c']];
+    // dal passato: la voce piu' vecchia della settimana piu' affine a quelle di questa settimana
+    $echo = null;
+    if ($ids) {
+      $x = $db->querySingle("SELECT e.*, MAX(l.score) s FROM links l
+             JOIN entries e ON e.id = CASE WHEN l.src_id IN ($in_ids) THEN l.dst_id ELSE l.src_id END
+             WHERE (l.src_id IN ($in_ids) OR l.dst_id IN ($in_ids)) AND l.kind NOT IN ('temporal')
+               AND e.id NOT IN ($in_ids) AND e.archived = 0
+             GROUP BY e.id ORDER BY s DESC LIMIT 1", true);
+      if ($x) $echo = b_row($x);
+    }
+    api_json(['ok' => true, 'days' => $days, 'count' => count($items), 'words' => $words, 'items' => $items,
+              'persons' => $persons, 'themes' => $themes, 'tags' => $tags, 'echo' => $echo]);
+  }
+
+  case 'idle': {
+    $last = $db->querySingle('SELECT MAX(created_at) FROM entries');
+    $days = $last ? (int)floor((time() - strtotime($last . ' UTC')) / 86400) : -1;
+    api_json(['ok' => true, 'days' => $days, 'last' => $last ? fmt_dt((string)$last) : '']);
+  }
+
+  case 'settings_get':
+    api_json(['ok' => true, 'settings' => b_settings($db), 'state' => [
+      'memories' => kv_get($db, 'bot.sent.memories', ''), 'digest' => kv_get($db, 'bot.sent.digest', ''),
+      'nudge' => kv_get($db, 'bot.sent.nudge', '')]]);
+
+  case 'settings_set': {
+    foreach ((array)($in['set'] ?? []) as $k => $v) {
+      $k = (string)$k; $v = trim((string)$v);
+      if (array_key_exists($k, BOT_SETTINGS)) {
+        $ok = match ($k) {
+          'memories', 'digest', 'nudge' => in_array($v, ['0', '1'], true),
+          'memories_at', 'nudge_at' => (bool)preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v),
+          'digest_at' => (bool)preg_match('/^[1-7] ([01]\d|2[0-3]):[0-5]\d$/', $v),
+          'nudge_days' => ctype_digit($v) && (int)$v >= 1 && (int)$v <= 60,
+        };
+        if (!$ok) api_json(['ok' => false, 'error' => "valore non valido per $k: $v"], 400);
+        kv_set($db, 'bot.' . $k, $v);
+      } elseif (preg_match('/^sent\.(memories|digest|nudge)$/', $k)) {
+        kv_set($db, 'bot.' . $k, $v);       // segnalibri di invio (anti-doppioni dopo un riavvio)
+      }
+    }
+    api_json(['ok' => true, 'settings' => b_settings($db)]);
+  }
+
+  case 'hints': {
+    $id = b_resolve($db, $in['ref'] ?? '');
+    $e = $db->querySingle('SELECT title, body FROM entries WHERE id = ' . $id, true);
+    api_json(['ok' => true] + entry_hints($db, $id, (string)$e['title'], (string)$e['body']));
   }
 
   default:

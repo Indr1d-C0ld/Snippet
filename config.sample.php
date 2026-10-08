@@ -34,11 +34,38 @@ return [
     // esplicita via `php bin/snippet_tg.php --allow <id> <username>`.
     'ingest_bootstrap_from' => [],
 
-    // --- Motore keyword / correlazioni -----------------------------------
-    'keywords_per_entry'  => 8,   // quante keyword estrarre per voce
-    'autotags_per_entry'  => 5,   // quante delle keyword promuovere a tag 'auto'
-    'correlate_min_score' => 2,   // soglia sotto la quale l'arco non viene salvato
-    'correlate_max_links' => 12,  // max archi automatici in uscita per voce
+    // --- Analisi del testo e correlazioni (rivisto il 08/10/2026) ---------
+    // Keyword = termini (radici italiane) pesati TF-IDF sull'intero diario.
+    'keywords_per_entry'     => 8,
+    // Quanti tag automatici NUOVI puo' creare una voce. I tag che usi gia'
+    // altrove (stessa radice) vengono riusati senza tetto: il vocabolario
+    // converge invece di frammentarsi. (Sostituisce 'autotags_per_entry'.)
+    'autotags_new_per_entry' => 3,
+    // Affinita' minima (0..1) per salvare una correlazione automatica, e
+    // quante al massimo per voce. (Sostituisce 'correlate_min_score'.)
+    'link_min_score'         => 0.08,
+    'correlate_max_links'    => 8,
+
+    // --- Servizio ML locale (facoltativo; ml/snippet_ml.py) ----------------
+    // Ricerca per significato, voci simili, correlazioni semantiche e
+    // trascrizione dei vocali. Vuoto = disattivato: tutto il resto funziona.
+    'ml_url'           => '',            // es. 'http://127.0.0.1:8765'
+    'ml_token'         => '',            // = ML_TOKEN in /opt/snippet-ml/.env
+    'ml_embed_model'   => 'multilingual-e5-small',
+    // Coseno fra due voci sotto il quale non c'e' affinita' di significato
+    // (e5-small: la mediana fra voci qualsiasi e' ~0.81).
+    'semantic_floor'   => 0.83,
+    // Ricerca per significato: risultati sopra media + k * deviazione standard.
+    'semantic_query_k' => 1.0,
+
+    // --- Anteprime dei link citati nelle voci ------------------------------
+    // Titolo ed estratto delle pagine citate (contro il link-rot). Solo
+    // http/https verso IP pubblici, max 2 MB / 8 s. false = mai in rete.
+    'link_fetch'       => true,
+
+    // --- Esportazione in PDF (export.php) ----------------------------------
+    // Percorsi in cui cercare Chromium per generare il PDF del "libro".
+    'chromium_bin'     => ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome'],
 
     // --- Isolamento della sessione -------------------------------------
     // Nome del cookie di sessione: DEVE essere diverso da quello di ogni altra

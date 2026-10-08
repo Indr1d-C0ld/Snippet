@@ -96,7 +96,7 @@ if ($text === '' && !$has_files) {
   ingest_status($db, $log_id, 'empty');
   api_json(['ok' => false, 'error' => 'messaggio vuoto'], 400);
 }
-if ($text === '') $text = '(allegato senza testo)';
+if ($text === '') $text = ENTRY_PLACEHOLDER;
 
 $created = $date_ux > 0 ? gmdate('Y-m-d H:i:s', $date_ux) : now_utc();
 
@@ -143,7 +143,12 @@ function ingest_store_attachments(SQLite3 $db, int $eid, array $meta, int $max_b
     $st->bindValue(':t', (string)($m['tg_file_id'] ?? ''), SQLITE3_TEXT);
     $st->execute();
 
-    $out[] = ['kind' => $kind, 'orig_name' => $orig, 'bytes' => (int)$f['size']];
+    $att_id = (int)$db->lastInsertRowID();
+    // vocali e audio: trascrizione in attesa (la fa il bot, o la manutenzione)
+    if (in_array($kind, ['voice', 'audio'], true) && ml_enabled()) {
+      $db->exec("UPDATE attachments SET transcript_status = 'pending' WHERE id = " . $att_id);
+    }
+    $out[] = ['id' => $att_id, 'kind' => $kind, 'orig_name' => $orig, 'bytes' => (int)$f['size']];
     $i++;
   }
   return $out;
@@ -172,6 +177,9 @@ try {
     'slug' => $res['slug'],
     'url'  => 'entry.php?e=' . rawurlencode($res['slug']),
     'attachments' => $atts,
+    // nomi propri da confermare come persone, tag esistenti da proporre
+    'candidates' => $res['candidates'] ?? [],
+    'suggest'    => $res['suggest'] ?? [],
   ]);
 } catch (Throwable $e) {
   $db->exec('ROLLBACK');

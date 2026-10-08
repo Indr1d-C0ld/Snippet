@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
 
+remember_forget();          // il "Ricordami" di questo dispositivo smette di valere
 $_SESSION = [];
 if (ini_get('session.use_cookies')) {
   $p = session_get_cookie_params();

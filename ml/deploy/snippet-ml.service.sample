@@ -1,0 +1,31 @@
+[Unit]
+Description=snippet - servizio ML locale (embedding e trascrizione vocali)
+After=network.target
+
+[Service]
+Type=simple
+User=snippet-ml
+Group=snippet-ml
+EnvironmentFile=/opt/snippet-ml/.env
+WorkingDirectory=/opt/snippet-ml
+ExecStart=/opt/snippet-ml/venv/bin/python /opt/snippet-ml/snippet_ml.py
+Restart=always
+RestartSec=10
+# Bassa priorita': il server ha altro da fare. Il tetto di memoria copre
+# embedding (~0.5 GB) + una trascrizione col modello turbo (~1.5 GB).
+Nice=10
+CPUWeight=20
+MemoryMax=3G
+# Nessun dato esce dal server: rete consentita solo verso localhost.
+IPAddressDeny=any
+IPAddressAllow=localhost
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

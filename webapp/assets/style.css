@@ -210,3 +210,17 @@ blockquote, .quote {
 /* Nelle liste .row di badge non vogliamo i trattini di <li>. */
 .row li::before { content: none; }
 .row li { margin: 0; padding-left: 0; }
+
+/* Markdown leggero nel corpo delle voci (08/10/2026) */
+.entry-body p { margin: 0 0 0.9em; }
+.entry-body p:last-child { margin-bottom: 0; }
+.entry-body ul.md, .entry-body ol.md { margin: 0 0 0.9em 1.4em; padding: 0; }
+.entry-body ul.md { list-style: disc; }
+.entry-body ol.md { list-style: decimal; }
+.entry-body ul.md li, .entry-body ol.md li { margin: 0.2em 0; padding-left: 0.2em; }
+.entry-body ul.md li::before, .entry-body ol.md li::before { content: none; }
+.entry-body h3.md { font-size: 1.05rem; margin: 1.1em 0 0.4em; }
+.entry-body code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.entry-body a.hashtag { text-decoration: none; }
+.entry-body blockquote { margin: 0 0 0.9em; }

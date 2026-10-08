@@ -28,8 +28,14 @@
     manual:   function () { return COL.accent; },
     tag:      function () { return '#3fa66a'; },
     keyword:  function () { return COL.muted; },
+    semantic: function () { return '#d08a2e'; },
+    person:   function () { return '#d0507a'; },
     temporal: function () { return '#9a6dd7'; }
   };
+  // tinte dei temi (cluster): stesse in chiaro e scuro, riempimento leggero
+  var THEME_COL = ['#2f6feb', '#3fa66a', '#d08a2e', '#d0507a', '#9a6dd7', '#1c9fb0',
+                   '#b0861c', '#6a7fd6', '#c2603a', '#4f9d4f'];
+  function themeColor(c) { return c ? THEME_COL[(c - 1) % THEME_COL.length] : null; }
 
   /* ---- stato ---- */
   var nodes = [], edges = [], byId = {};
@@ -156,12 +162,15 @@
     for (var i = 0; i < edges.length; i++) {
       var e = edges[i], n = byId[e.s], m = byId[e.d];
       var a = toScreen(n.x, n.y), b = toScreen(m.x, m.y);
-      ctx.globalAlpha = e.kind === 'manual' ? 0.75 : 0.4;
+      ctx.globalAlpha = e.kind === 'manual' ? 0.75 : (e.kind === 'temporal' ? 0.25 : 0.45);
       ctx.strokeStyle = (EDGE_COL[e.kind] || EDGE_COL.keyword)();
-      ctx.lineWidth = Math.max(1, Math.min(4, (e.score || 1) / 4)) * (e.kind === 'manual' ? 1.4 : 1);
+      // punteggi in 0..1 (dal 08/10/2026): 1px per gli archi deboli, fino a 5px
+      ctx.lineWidth = (1 + 4 * Math.min(1, e.score || 0)) * (e.kind === 'manual' ? 1.4 : 1);
+      if (e.kind === 'temporal') ctx.setLineDash([2, 4]);
       ctx.beginPath();
       ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
     ctx.globalAlpha = 1;
 
@@ -184,6 +193,10 @@
       ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
       ctx.fillStyle = nd === hoverNode ? COL.accent : COL.surf;
       ctx.fill();
+      var tc = themeColor(nd.cluster);
+      if (tc && nd !== hoverNode) {
+        ctx.globalAlpha = 0.55; ctx.fillStyle = tc; ctx.fill(); ctx.globalAlpha = 1;
+      }
       ctx.lineWidth = nd.pinned ? 2.5 : 1.2;
       ctx.strokeStyle = nd.pinned ? COL.accent : COL.border;
       ctx.stroke();

@@ -1,5 +1,108 @@
 # Changelog
 
+## 2026-10-08 — Roadmap: analisi del testo, bot proattivo, web completo
+
+Revisione dell'intero progetto basata sull'uso reale (15 voci, tutte da
+Telegram; 130 tag di cui 112 usati una sola volta; 2 soli archi da keyword;
+login web ripetuto a ogni visita dal telefono) e quattro blocchi di lavoro.
+Schema del database dalla versione 1 alla 6 tramite migrazioni automatiche.
+Test: 99 controlli PHP (`tests/run.php`) e 22 scenari del bot
+(`tests/bot_harness.py`), tutti verdi.
+
+### Fondamenta
+- **Migrazioni di schema** (`webapp/migrations.php` nuovo, `webapp/lib.php`):
+  passi numerati applicati da `db_migrate()` secondo `PRAGMA user_version`,
+  ognuno in transazione. `schema.sql` resta la base (v1). Nuove tabelle: `kv`,
+  `entry_terms`, `persons`, `entry_persons`, `entity_ignore`, `clusters`,
+  `entry_vectors`, `link_previews`, `auth_tokens`, `tag_aliases`.
+- **Test automatici** (`tests/` nuovo): runner senza dipendenze su DB
+  temporaneo; `SNIPPET_CONFIG` in `lib.php` permette una configurazione di prova.
+- **Backup**: `bin/snippet_backup.sh` legge il DB in `mode=ro` (vede anche il
+  WAL; `immutable` lo ignorava, rischiando di perdere scritture recenti).
+- **`.htaccess`** (`deploy/htaccess.sample`): negati anche `tests/`,
+  `migrations.php` e qualunque copia `*.bak`, `*.orig`, `*~`.
+
+### Analisi del testo (`webapp/lib_nlp.php`, `lib_stem.php` nuovo)
+- **Stemmer italiano** Snowball in PHP puro, identico all'implementazione di
+  riferimento su 1.843 parole (oracolo nei test).
+- **Termini e TF-IDF**: le keyword si pesano sull'intero diario; in corpo e
+  titolo, con premio al titolo. Nuova tabella `entry_terms`.
+- **Auto-tag convergenti**: riuso dei tag esistenti per radice; tag nuovi solo
+  per termini ripetuti e distintivi (`autotags_new_per_entry`, default 3).
+  Su dati reali: da 95 a 15 associazioni automatiche.
+- **Persone**: candidati dai nomi propri non a inizio frase, ordinati con un
+  elenco di nomi di battesimo (`webapp/firstnames.php` nuovo) e filtrati
+  (luoghi, `-ismo`, parole che compaiono anche in minuscolo). Una persona
+  confermata è riconosciuta ovunque (alias e `#hashtag`), non diventa mai
+  auto-tag e conta nelle correlazioni.
+- **Correlazioni**: punteggio 0–1 che combina coseno TF-IDF, coseno degli
+  embedding, Jaccard sui tag e persone in comune; tipo dell'arco = componente
+  prevalente (`keyword`, `semantic`, `tag`, `person`). Archi `temporal` per le
+  voci a meno di 24 h. Soglie calibrate sul diario reale.
+- **Temi**: propagazione deterministica delle etichette sul grafo, etichette
+  dai termini caratterizzanti (`graph_clusters()`).
+- **Suggerimenti** di tag esistenti per voce e di **fusioni** di doppioni
+  (stessa radice, stessa famiglia `-ista/-ismo`, nome con/senza spazi,
+  refusi); la fusione riscrive gli `#hashtag` e crea un **alias** permanente.
+- **Correzioni**: il filtro dei verbi scartava i nomi in `-isti` (nazisti,
+  artisti); "bene", "reale" e altri aggettivi di giudizio ora sono stopword
+  (`webapp/stopwords.php`).
+- `webapp/tags.php`: **Rinomina/unisci** ed **Elimina** ora agiscono anche sul
+  testo delle voci (prima il vecchio tag rinasceva alla modifica successiva).
+
+### Servizio ML locale (`ml/` nuovo, `webapp/lib_ml.php` nuovo)
+- `ml/snippet_ml.py`: `/embed` (multilingual-e5-small, ONNX quantizzato) e
+  `/transcribe` (whisper.cpp, una trascrizione alla volta, `nice 19`). Solo
+  127.0.0.1, token, e l'unità systemd vieta qualunque rete esterna.
+- `ml/deploy/install-ml.sh`: installazione idempotente (scarica o riusa venv,
+  modelli e binario).
+
+### Bot (`bot/snippet_bot.py`, `webapp/api/bot.php`, `webapp/api/ingest.php`)
+- **Trascrizione dei vocali** in background; il testo diventa la voce (o si
+  accoda alla didascalia) ed è cercabile e correlato.
+- **Notifiche**: ricordi (una settimana, uno/tre/sei mesi, N anni fa),
+  riepilogo settimanale (temi, persone, tag, "dal passato"), promemoria dopo N
+  giorni di silenzio. `/notifiche` per attivarle e regolarne gli orari;
+  segnalibri nel DB (niente doppioni dopo un riavvio). Con il PIN attivo il
+  contenuto resta in coda e arriva allo sblocco; in chat va solo un avviso.
+- **Risposta a una scheda** (o al proprio messaggio originale): aggiungi al
+  testo (datato) / come nota / voce nuova.
+- Dopo il salvataggio: "è una persona?" e tag suggeriti, a un tocco.
+- Nuovi comandi: `/sig`, `/persone`, `/p`, `/temi`, `/ricordi`, `/digest`,
+  `/notifiche`; `/search` con filtri e modalità mista; bottoni 🧭 simili,
+  👤 persona, 🗂 tema; formattazione Markdown nelle schede; `/lock` cancella
+  anche liste e riepiloghi.
+- API: `persons`, `person`, `person_add`, `person_ignore`, `themes`, `theme`,
+  `semantic`, `similar`, `hints`, `append`, `by_tg`, `transcript`,
+  `links_fetch`, `memories`, `digest`, `idle`, `settings_get/set`.
+
+### Web
+- **"Ricordami"** (`webapp/lib.php`, `login.php`, `logout.php`,
+  `profile.php`): token selector/validator con hash nel DB, rotazione a ogni
+  uso, furto rilevato, 30 giorni dall'ultimo uso, elenco dispositivi e revoca;
+  il cambio password revoca gli altri dispositivi.
+- **Markdown leggero** sicuro (`entry_render_body()`, `md_inline()`): tutto
+  il testo passa da `h()` prima di ogni trasformazione; link solo http/https.
+- **Ricerca** (`webapp/lib_search.php` nuovo, `search.php`): filtri nel testo,
+  modalità parole / significato / mista (Reciprocal Rank Fusion), soglia
+  semantica relativa alla query, ripiego automatico per la sintassi FTS.
+- **Pagine nuove**: `people.php`, `themes.php`, `export.php`; in `entry.php`
+  persone, tema, voci vicine per significato, tag suggeriti, fonti citate,
+  lettore audio e stato delle trascrizioni; in `stats.php` il calendario
+  dell'anno; in `map.php` sei tipi di arco e nodi colorati per tema.
+- **Anteprime dei link** (`webapp/lib_links.php` nuovo): solo IP pubblici
+  (DNS verificato e imposto a curl), redirect ricontrollati, 2 MB / 8 s.
+- **Esportazione** (`webapp/lib_export.php` nuovo): ZIP Markdown con front
+  matter + allegati + JSON; libro stampabile; PDF con Chromium headless.
+
+### Manutenzione
+- `bin/snippet_maintenance.php`: vocali in sospeso, anteprime in attesa,
+  ricostruzione completa con i vettori mancanti
+  (`deploy/snippet-maintenance.service.sample` aggiornato).
+- `config.sample.php`: chiavi nuove documentate (`autotags_new_per_entry`,
+  `link_min_score`, `ml_*`, `semantic_*`, `link_fetch`, `chromium_bin`);
+  `autotags_per_entry` e `correlate_min_score` non sono più usate.
+
 ## 2026-09-14 — Audit completo: sicurezza, ciclo di vita dei dati, operativita'
 
 Revisione integrale della piattaforma (webapp, API, bot, script, deploy,

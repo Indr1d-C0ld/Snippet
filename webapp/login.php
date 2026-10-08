@@ -64,6 +64,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $_SESSION['uname'] = $username;
       $_SESSION['role']  = 'admin';
       $dbw->exec('UPDATE users SET last_login_at=datetime(\'now\') WHERE id=' . $uid);
+      if (!empty($_POST['remember'])) remember_issue($dbw, $uid);
 
       header('Location: compose.php');
       exit;
@@ -87,6 +88,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $_SESSION['uname'] = (string)$row['username'];
       $_SESSION['role']  = (string)$row['role'];
       $dbw->exec('UPDATE users SET last_login_at=datetime(\'now\') WHERE id=' . (int)$row['id']);
+      if (!empty($_POST['remember'])) remember_issue($dbw, (int)$row['id']);
 
       if (password_needs_rehash((string)$row['password_hash'], PASSWORD_DEFAULT)) {
         $u = $dbw->prepare('UPDATE users SET password_hash=:h WHERE id=:id');
@@ -145,6 +147,11 @@ $site = (string)(cfg()['site_name'] ?? 'snippet');
       <div class="meta" style="margin-top:8px">Ripeti password</div>
       <input type="password" name="password2" required minlength="8">
     <?php endif; ?>
+
+    <label class="meta" style="display:flex;align-items:center;gap:8px;margin-top:10px">
+      <input type="checkbox" name="remember" value="1" checked style="width:auto">
+      Ricordami su questo dispositivo per <?= REMEMBER_DAYS ?> giorni
+    </label>
 
     <div style="margin-top:12px">
       <button class="btn" type="submit"><?= $bootstrap ? 'Crea account' : 'Accedi' ?></button>

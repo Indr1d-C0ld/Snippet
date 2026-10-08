@@ -231,4 +231,14 @@ return [
     'poter', 'voler', 'dover', 'saper', 'esser', 'aver', 'andar', 'far',
     'manca', 'mancano', 'basta', 'bastano', 'avanti', 'indietro', 'insieme',
     'sarà', 'sara', 'farà', 'fara', 'sarò', 'saro', 'farò', 'faro',
+    // aggettivi/avverbi di giudizio generici: non descrivono l'argomento
+    // (08/10/2026: "bene" e "reale" diventavano auto-tag)
+    'bene', 'male', 'meglio', 'peggio', 'reale', 'reali', 'vero', 'vera', 'veri',
+    'vere', 'tipo', 'ovviamente', 'ovvio', 'ovvia', 'davvero', 'proprio', 'propria',
+    'propri', 'proprie', 'tanto', 'tanta', 'tanti', 'tante', 'troppo', 'troppa',
+    'troppi', 'troppe', 'strano', 'strana', 'strani', 'strane', 'assurdo', 'assurda',
+    'brutto', 'brutta', 'bello', 'bella', 'belli', 'belle', 'buono', 'buona',
+    'certo', 'certa', 'certi', 'certe', 'solito', 'solita', 'semplice', 'semplici',
+    'possibile', 'possibili', 'importante', 'importanti', 'diverso', 'diversa',
+    'diversi', 'diverse', 'stesso', 'stessa', 'stessi', 'stesse', 'altro', 'altra',
 ];

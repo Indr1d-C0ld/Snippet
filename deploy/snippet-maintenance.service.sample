@@ -1,5 +1,5 @@
 [Unit]
-Description=snippet - manutenzione (ricostruzione grafo correlazioni)
+Description=snippet - manutenzione (vocali in sospeso, anteprime link, grafo, temi, vettori)
 After=network.target
 
 [Service]
@@ -8,5 +8,5 @@ User=www-data
 Group=www-data
 # Adatta il percorso all'installazione. `bin/` sta accanto ai file della
 # webapp (protetto da .htaccess + guard PHP_SAPI).
-ExecStart=/usr/bin/php /var/www/html/snippet/bin/snippet_maintenance.php --graph
+ExecStart=/usr/bin/php /var/www/html/snippet/bin/snippet_maintenance.php
 WorkingDirectory=/var/www/html/snippet

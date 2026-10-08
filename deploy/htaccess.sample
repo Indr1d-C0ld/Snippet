@@ -6,19 +6,24 @@
 <FilesMatch "\.(sql|db|db-wal|db-shm|sqlite|sqlite3)$">
   Require all denied
 </FilesMatch>
-<Files "config.php">
+<FilesMatch "^(config|migrations)\.php$">
   Require all denied
-</Files>
+</FilesMatch>
+# copie di sicurezza e file temporanei degli editor: mai serviti
+<FilesMatch "(\.(bak|orig|old|swp|save|tmp)|~)$|\.bak-">
+  Require all denied
+</FilesMatch>
 # gli endpoint api/_*.php sono solo include, mai richiesti direttamente
 <FilesMatch "^_.*\.php$">
   Require all denied
 </FilesMatch>
 
-# Script CLI e materiale di deploy: mai serviti via HTTP.
-# (bin/*.php hanno anche un guard PHP_SAPI; questo e' il primo livello.)
+# Script CLI, test e materiale di deploy: mai serviti via HTTP.
+# (bin/*.php e tests/run.php hanno anche un guard PHP_SAPI; questo e' il
+# primo livello.)
 <IfModule mod_rewrite.c>
   RewriteEngine On
-  RewriteRule ^(bin|deploy)/ - [F,L]
+  RewriteRule ^(bin|deploy|tests)/ - [F,L]
 </IfModule>
 
 # --- Header di sicurezza + CSP -------------------------------------------------

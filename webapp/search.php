@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require __DIR__ . '/lib.php';
 require __DIR__ . '/lib_nlp.php';
+require __DIR__ . '/lib_search.php';
 require __DIR__ . '/nav.php';
 require_login();
 
@@ -52,18 +53,22 @@ $flash = flash_take();
 $db = db_ro();
 
 $q       = trim((string)($_GET['q'] ?? ''));
+// compatibilita' con i vecchi link (?tag=..&source=..): diventano filtri nel testo
 $tag     = nlp_tag_normalize((string)($_GET['tag'] ?? ''));
 $source  = (string)($_GET['source'] ?? '');
-if (!in_array($source, ['', 'web', 'telegram', 'import'], true)) $source = '';
-$sort    = (string)($_GET['sort'] ?? 'date');
-if (!in_array($sort, ['date', 'rel'], true)) $sort = 'date';
+if ($tag !== '') $q = trim($q . ' tag:' . str_replace(' ', '_', $tag));
+if (in_array($source, ['web', 'telegram', 'import'], true)) $q = trim($q . ' fonte:' . $source);
+$mode    = (string)($_GET['mode'] ?? 'auto');
+if (!in_array($mode, ['auto', 'misto', 'parole', 'significato'], true)) $mode = 'auto';
+$sort    = (string)($_GET['sort'] ?? 'rel');
+if (!in_array($sort, ['date', 'rel'], true)) $sort = 'rel';
 $show_archived = (int)($_GET['archived'] ?? 0) === 1;
 $limit = (int)($_GET['limit'] ?? 25);
 if (!in_array($limit, [10, 25, 50, 100], true)) $limit = 25;
 $page = (isset($_GET['page']) && ctype_digit((string)$_GET['page'])) ? max(1, (int)$_GET['page']) : 1;
 
 $cur_qs = http_build_query(array_filter([
-  'q' => $q, 'tag' => $tag, 'source' => $source, 'sort' => $sort,
+  'q' => $q, 'mode' => $mode !== 'auto' ? $mode : '', 'sort' => $sort,
   'archived' => $show_archived ? 1 : '', 'limit' => $limit,
 ], static fn($v) => $v !== '' && $v !== null));
 
@@ -78,46 +83,19 @@ $rows = [];
 $total = 0;
 $pages = 0;
 $err = '';
-
+$res = null;
 if ($q !== '') {
   try {
-    $cond = ['entries_fts MATCH :q'];
-    $bind = [':q' => [$q, SQLITE3_TEXT]];
-    if (!$show_archived) $cond[] = 'e.archived = 0';
-    if ($source !== '') { $cond[] = 'e.source = :src'; $bind[':src'] = [$source, SQLITE3_TEXT]; }
-    if ($tag !== '') {
-      $cond[] = 'e.id IN (SELECT et.entry_id FROM entry_tags et JOIN tags t ON t.id = et.tag_id WHERE t.name = :tag)';
-      $bind[':tag'] = [$tag, SQLITE3_TEXT];
-    }
-    $wsql = implode(' AND ', $cond);
-
-    $cst = $db->prepare("SELECT COUNT(*) c FROM entries_fts JOIN entries e ON e.id = entries_fts.rowid WHERE $wsql");
-    foreach ($bind as $k => [$v, $t]) $cst->bindValue($k, $v, $t);
-    $total = (int)$cst->execute()->fetchArray(SQLITE3_ASSOC)['c'];
+    $res = search_run($db, $q, $mode, $page, $limit, $show_archived, $sort);
+    $total = $res['total'];
     $pages = (int)ceil($total / $limit);
-    if ($pages > 0 && $page > $pages) $page = $pages;
-    $offset = ($page - 1) * $limit;
-
-    $order = $sort === 'rel' ? 'bm25(entries_fts)' : 'e.created_at DESC';
-    $sql = "
-      SELECT e.id, e.slug, e.title, e.body, e.created_at, e.source,
-             snippet(entries_fts, 1, char(2), char(3), '…', 20) AS snip
-      FROM entries_fts
-      JOIN entries e ON e.id = entries_fts.rowid
-      WHERE $wsql
-      ORDER BY $order
-      LIMIT :lim OFFSET :off
-    ";
-    $st = $db->prepare($sql);
-    foreach ($bind as $k => [$v, $t]) $st->bindValue($k, $v, $t);
-    $st->bindValue(':lim', $limit, SQLITE3_INTEGER);
-    $st->bindValue(':off', $offset, SQLITE3_INTEGER);
-    $r = $st->execute();
-    while ($x = $r->fetchArray(SQLITE3_ASSOC)) $rows[] = $x;
+    $rows = $res['items'];
   } catch (Throwable $e) {
     $err = $e->getMessage();
   }
 }
+$ml_on = ml_enabled();
+$MODE_LABEL = ['misto' => 'parole + significato', 'parole' => 'parole', 'significato' => 'significato', 'filtri' => 'solo filtri'];
 
 function search_page_url(int $n): string {
   $p = $_GET;
@@ -167,16 +145,16 @@ function search_page_url(int $n): string {
   <form method="get" class="card">
     <div class="row">
       <input class="grow" name="q" value="<?=h($q)?>" autofocus
-             placeholder='FTS5: diario AND struttura &middot; "una frase" &middot; berl*'>
-      <input name="tag" value="<?=h($tag)?>" placeholder="tag">
-      <select name="source">
-        <?php foreach (['' => 'ogni fonte', 'web' => 'web', 'telegram' => 'telegram', 'import' => 'import'] as $k => $lab): ?>
-          <option value="<?=$k?>" <?= $source === $k ? 'selected' : '' ?>><?=$lab?></option>
+             placeholder='cosa cerchi… (anche: tag:lavoro persona:jamal da:01/09/2026)'>
+      <select name="mode" title="come cercare">
+        <?php foreach (['auto' => $ml_on ? 'parole + significato' : 'parole', 'parole' => 'solo parole', 'significato' => 'per significato'] as $k => $lab):
+          if ($k === 'significato' && !$ml_on) continue; ?>
+          <option value="<?=$k?>" <?= $mode === $k ? 'selected' : '' ?>><?=h($lab)?></option>
         <?php endforeach; ?>
       </select>
       <select name="sort">
-        <option value="date" <?= $sort === 'date' ? 'selected' : '' ?>>per data</option>
         <option value="rel" <?= $sort === 'rel' ? 'selected' : '' ?>>per rilevanza</option>
+        <option value="date" <?= $sort === 'date' ? 'selected' : '' ?>>per data</option>
       </select>
       <select name="limit">
         <?php foreach ([10, 25, 50, 100] as $n): ?>
@@ -189,14 +167,16 @@ function search_page_url(int $n): string {
       <button class="btn" type="submit">Cerca</button>
     </div>
     <div class="meta" style="margin-top:6px">
-      Esempi: <span class="badge">title:berlino</span>
-      <span class="badge">diario NOT cucina</span>
-      <span class="badge">"struttura del diario"</span>
+      Filtri: <span class="badge">tag:lavoro</span> <span class="badge">persona:jamal</span>
+      <span class="badge">persona:"Mario Scarpati"</span> <span class="badge">da:01/09/2026</span>
+      <span class="badge">a:09/2026</span> <span class="badge">tema:2</span> <span class="badge">fonte:telegram</span>
+      · Parole: <span class="badge">diario NOT cucina</span> <span class="badge">"una frase"</span> <span class="badge">berl*</span>
+      <?php if ($ml_on): ?>· Per significato: descrivi a parole tue, es. <span class="badge">litigi in ufficio</span><?php endif; ?>
     </div>
   </form>
 
   <?php if ($err): ?>
-    <div class="card"><b>Errore query FTS:</b> <?=h($err)?></div>
+    <div class="card"><b>Errore:</b> <?=h($err)?></div>
   <?php endif; ?>
 
   <?php if ($q !== '' && !$err): ?>
@@ -204,7 +184,10 @@ function search_page_url(int $n): string {
       <div class="row" style="justify-content:space-between">
         <div>
           <b><?=$total?> risultati</b>
+          <span class="meta"> · <?=h($MODE_LABEL[$res['mode']] ?? $res['mode'])?></span>
+          <?php if ($res['parsed']['desc'] !== ''): ?><span class="meta"> · <?=h($res['parsed']['desc'])?></span><?php endif; ?>
           <?php if ($pages > 1): ?><span class="meta"> · pagina <?=$page?>/<?=$pages?></span><?php endif; ?>
+          <?php if ($res['note'] !== ''): ?><div class="meta">⚠ <?=h($res['note'])?></div><?php endif; ?>
         </div>
         <form method="post" class="row" style="gap:6px">
           <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
@@ -225,9 +208,12 @@ function search_page_url(int $n): string {
             <a href="<?=h(entry_url($r))?>"><b><?=h((string)($r['title'] ?: first_line((string)$r['body'], 80)))?></b></a>
             <span class="badge"><?=h((string)$r['source'])?></span>
             <span class="meta"><?=h(fmt_dt((string)$r['created_at']))?> · <?=h((string)$r['slug'])?></span>
+            <?php if ($r['sim'] !== null): ?><span class="badge" title="affinità di significato">🧭 <?= (int)round($r['sim'] * 100) ?>%</span><?php endif; ?>
           </div>
           <?php if (!empty($r['snip'])): ?>
             <div class="small result-snippet"><?= str_replace(["\x02", "\x03"], ['<mark>', '</mark>'], h((string)$r['snip'])) ?></div>
+          <?php else: ?>
+            <div class="small result-snippet"><?=h(mb_substr(trim(preg_replace('/\s+/', ' ', (string)$r['body']) ?? ''), 0, 200, 'UTF-8'))?>…</div>
           <?php endif; ?>
         </div>
         <hr>

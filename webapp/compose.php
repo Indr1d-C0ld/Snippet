@@ -37,6 +37,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       'author' => current_user(),
       'source' => 'web',
     ]);
+    // anteprime dei link citati: subito, con un tetto (il resto lo fa la manutenzione)
+    links_fetch_pending($db, (int)$res['id'], 3);
     if ($ajax) {
       header('Content-Type: application/json; charset=utf-8');
       echo json_encode(['ok' => true, 'url' => entry_url($res['slug']), 'slug' => $res['slug']], JSON_UNESCAPED_UNICODE);

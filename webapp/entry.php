@@ -30,6 +30,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     flash_set('ok', $action === 'archive' ? 'Voce archiviata.' : 'Voce ripristinata.');
     header('Location: ' . entry_url($ref)); exit;
   }
+  if ($action === 'tag_add') {
+    $name = nlp_tag_normalize((string)($_POST['name'] ?? ''));
+    if ($name !== '') {
+      $raw = (string)$dbw->querySingle('SELECT raw FROM entries WHERE id=' . $eid);
+      entry_update($dbw, $eid, nlp_merge_tags_into_raw($raw, [$name]), current_user());
+      flash_set('ok', 'Tag «' . $name . '» aggiunto.');
+    }
+    header('Location: ' . entry_url($ref)); exit;
+  }
+  if ($action === 'person_add' || $action === 'person_ignore') {
+    $name = trim((string)($_POST['name'] ?? ''));
+    if ($name !== '') {
+      if ($action === 'person_add') {
+        person_add($dbw, $name);
+        persons_reindex($dbw);
+        graph_rebuild($dbw);
+        flash_set('ok', '«' . $name . '» aggiunto alle persone: riconosciuto in tutto il diario.');
+      } else {
+        person_ignore($dbw, $name);
+        flash_set('ok', '«' . $name . '» non verra\' piu\' proposto.');
+      }
+    }
+    header('Location: ' . entry_url($ref)); exit;
+  }
   if ($action === 'delete') {
     $res = entry_delete($dbw, $eid);   // rimuove anche i file degli allegati
     flash_set('ok', 'Voce eliminata.' . ($res['files'] ? " Rimossi {$res['files']} allegati." : ''));
@@ -64,7 +88,7 @@ $st = $db->prepare("
   SELECT CASE WHEN l.src_id = :id THEN l.dst_id ELSE l.src_id END AS other,
          l.kind, l.score
   FROM links l
-  WHERE (l.src_id = :id OR l.dst_id = :id) AND l.kind <> 'manual'
+  WHERE (l.src_id = :id OR l.dst_id = :id) AND l.kind NOT IN ('manual', 'temporal')
 ");
 $st->bindValue(':id', $eid, SQLITE3_INTEGER);
 $r = $st->execute();
@@ -99,10 +123,23 @@ function entries_brief(SQLite3 $db, array $ids): array {
   while ($row = $r->fetchArray(SQLITE3_ASSOC)) $out[(int)$row['id']] = $row;
   return $out;
 }
-$brief = entries_brief($db, array_merge(array_keys($related), $mentions_out, $mentions_in));
+/* persone, tema, voci vicine per significato, suggerimenti */
+$persons = [];
+$rs = $db->query('SELECT p.id, p.name, ep.mentions FROM entry_persons ep JOIN persons p ON p.id = ep.person_id
+                  WHERE ep.entry_id=' . $eid . ' ORDER BY ep.mentions DESC, p.name');
+while ($rs && ($r = $rs->fetchArray(SQLITE3_ASSOC))) $persons[] = $r;
+$theme = $e['cluster'] !== null
+  ? $db->querySingle('SELECT id, label, size FROM clusters WHERE id=' . (int)$e['cluster'], true) : null;
+$skipn = $related + array_fill_keys(array_merge($mentions_out, $mentions_in), true);
+$neighbors = entry_semantic_neighbors($db, $eid, 5, $skipn);
+$suggest = nlp_suggest_tags($db, $eid, 6);
+$candidates = nlp_person_candidates($db, (string)$e['title'] . "\n" . (string)$e['body'], nlp_persons($db), 4);
 
+$brief = entries_brief($db, array_merge(array_keys($related), $mentions_out, $mentions_in, array_keys($neighbors)));
+
+$links = links_for_entry($db, $eid);
 $attachments = [];
-$rs = $db->query('SELECT id, kind, orig_name, mime, bytes FROM attachments WHERE entry_id=' . $eid . ' ORDER BY id ASC');
+$rs = $db->query('SELECT id, kind, orig_name, mime, bytes, transcript, transcript_status FROM attachments WHERE entry_id=' . $eid . ' ORDER BY id ASC');
 while ($rs && ($r = $rs->fetchArray(SQLITE3_ASSOC))) $attachments[] = $r;
 
 $notes = [];
@@ -200,7 +237,7 @@ function brief_label(?array $b): string {
 
   <div>
     <div class="card">
-      <b>Parole piu' frequenti</b>
+      <b>Parole chiave</b>
       <?php if (!$keywords): ?>
         <div class="meta" style="margin-top:6px">Nessuna (testo troppo breve).</div>
       <?php else: ?>
@@ -225,7 +262,60 @@ function brief_label(?array $b): string {
           <?php endforeach; ?>
         </div>
       <?php endif; ?>
+
+      <?php if ($suggest): ?>
+        <div class="meta" style="margin-top:10px">Tag che usi altrove e che si adattano a questa voce:</div>
+        <div class="row" style="margin-top:6px">
+          <?php foreach ($suggest as $t): ?>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+              <input type="hidden" name="action" value="tag_add">
+              <input type="hidden" name="name" value="<?=h($t)?>">
+              <button class="badge" type="submit" title="aggiungi il tag">＋ <?=h($t)?></button>
+            </form>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
     </div>
+
+    <?php if ($persons || $candidates || $theme): ?>
+    <div class="card">
+      <?php if ($theme): ?>
+        <b>Tema</b>
+        <div style="margin-top:6px"><a class="badge red-stamp" href="themes.php?id=<?= (int)$theme['id'] ?>"><?=h((string)$theme['label'])?></a>
+          <span class="meta"><?= (int)$theme['size'] ?> voci</span></div>
+        <?php if ($persons || $candidates): ?><hr><?php endif; ?>
+      <?php endif; ?>
+      <?php if ($persons): ?>
+        <b>Persone</b>
+        <div class="row" style="margin-top:8px">
+          <?php foreach ($persons as $p): ?>
+            <a class="badge red-stamp" href="people.php?id=<?= (int)$p['id'] ?>">👤 <?=h((string)$p['name'])?></a>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
+      <?php if ($candidates): ?>
+        <div class="meta" style="margin-top:10px">Nomi propri non ancora riconosciuti — sono persone?</div>
+        <?php foreach ($candidates as $c): ?>
+          <div class="row" style="margin-top:6px; gap:6px">
+            <span class="small"><?=h($c)?></span>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+              <input type="hidden" name="action" value="person_add">
+              <input type="hidden" name="name" value="<?=h($c)?>">
+              <button class="badge" type="submit">👤 sì</button>
+            </form>
+            <form method="post" style="display:inline">
+              <input type="hidden" name="csrf" value="<?=h(csrf_token())?>">
+              <input type="hidden" name="action" value="person_ignore">
+              <input type="hidden" name="name" value="<?=h($c)?>">
+              <button class="badge" type="submit">✕ no</button>
+            </form>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
 
     <div class="card">
       <b>Correlati</b>
@@ -239,9 +329,18 @@ function brief_label(?array $b): string {
           <?php foreach ($related as $oid => $meta): $b = $brief[$oid] ?? null; ?>
             <li>
               <a href="entry.php?e=<?=rawurlencode((string)($b['slug'] ?? $oid))?>"><?=h(brief_label($b))?></a>
-              <span class="badge"><?=h($meta['kind'])?> · <?= (int)round($meta['score']) ?></span>
+              <span class="badge" title="affinità complessiva, componente prevalente"><?=h(link_kind_label($meta['kind']))?> · <?= (int)round($meta['score'] * 100) ?>%</span>
               <?php if ($b): ?><div class="meta"><?=h(fmt_dt((string)$b['created_at']))?></div><?php endif; ?>
             </li>
+          <?php endforeach; ?>
+        </ul>
+      <?php endif; ?>
+      <?php if ($neighbors): ?>
+        <div class="meta" style="margin-top:10px">Vicine per significato:</div>
+        <ul class="small">
+          <?php foreach ($neighbors as $oid => $cos): $b = $brief[$oid] ?? null; ?>
+            <li><a href="entry.php?e=<?=rawurlencode((string)($b['slug'] ?? $oid))?>"><?=h(brief_label($b))?></a>
+              <span class="meta"><?=h(fmt_dt((string)($b['created_at'] ?? ''), false))?></span></li>
           <?php endforeach; ?>
         </ul>
       <?php endif; ?>
@@ -269,6 +368,26 @@ function brief_label(?array $b): string {
     </div>
     <?php endif; ?>
 
+    <?php if ($links): ?>
+    <div class="card">
+      <b>Fonti citate</b>
+      <?php foreach ($links as $l): ?>
+        <div style="margin-top:10px">
+          <a href="<?=h((string)$l['url'])?>" target="_blank" rel="noopener noreferrer nofollow"><b><?=h((string)($l['title'] ?: $l['url']))?></b></a>
+          <div class="meta"><?=h((string)($l['site'] ?: parse_url((string)$l['url'], PHP_URL_HOST)))?>
+            <?php if ($l['status'] === 'ok' && $l['fetched_at']): ?> · salvata il <?=h(fmt_dt((string)$l['fetched_at'], false))?><?php endif; ?>
+            <?php if ($l['status'] === 'pending'): ?> · anteprima in arrivo<?php endif; ?>
+            <?php if ($l['status'] === 'error'): ?> · non raggiungibile<?php endif; ?></div>
+          <?php if (!empty($l['description'])): ?><div class="small" style="margin-top:4px"><?=h((string)$l['description'])?></div><?php endif; ?>
+          <?php if (!empty($l['excerpt'])): ?>
+            <details style="margin-top:4px"><summary class="meta">testo salvato (resta anche se la pagina sparisce)</summary>
+              <div class="small text-scroll" style="margin-top:6px"><?=nl2br(h((string)$l['excerpt']))?></div></details>
+          <?php endif; ?>
+        </div>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+
     <?php if ($attachments): ?>
     <div class="card">
       <b>Allegati</b>
@@ -276,7 +395,14 @@ function brief_label(?array $b): string {
         <?php foreach ($attachments as $a): ?>
           <li>
             <a href="attachment.php?id=<?= (int)$a['id'] ?>"><?=h((string)($a['orig_name'] ?: $a['kind']))?></a>
-            <span class="meta"><?=h((string)$a['kind'])?><?php if (!empty($a['bytes'])): ?> · <?= (int)round($a['bytes']/1024) ?> KB<?php endif; ?></span>
+            <span class="meta"><?=h((string)$a['kind'])?><?php if (!empty($a['bytes'])): ?> · <?= (int)round($a['bytes']/1024) ?> KB<?php endif; ?>
+              <?= ['pending' => ' · 🎙 trascrizione in corso', 'done' => ' · 🎙 trascritto', 'error' => ' · 🎙 non trascritto'][(string)($a['transcript_status'] ?? '')] ?? '' ?></span>
+            <?php if (in_array($a['kind'], ['voice', 'audio'], true)): ?>
+              <audio controls preload="none" src="attachment.php?id=<?= (int)$a['id'] ?>" style="width:100%; margin-top:6px"></audio>
+            <?php elseif ($a['kind'] === 'photo'): ?>
+              <a href="attachment.php?id=<?= (int)$a['id'] ?>"><img src="attachment.php?id=<?= (int)$a['id'] ?>" alt="" loading="lazy"
+                 style="max-width:100%; border-radius:var(--radius); margin-top:6px"></a>
+            <?php endif; ?>
           </li>
         <?php endforeach; ?>
       </ul>
