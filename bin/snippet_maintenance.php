@@ -9,14 +9,14 @@ if (PHP_SAPI !== 'cli') { http_response_code(403); exit("solo da riga di comando
  *
  *   php bin/snippet_maintenance.php                tutto, nell'ordine sotto
  *   php bin/snippet_maintenance.php --transcribe   vocali rimasti da trascrivere
- *   php bin/snippet_maintenance.php --links        anteprime dei link in attesa
  *   php bin/snippet_maintenance.php --graph        ricostruzione integrale: termini,
  *        TF-IDF, keyword, tag, persone, vettori semantici mancanti, archi, temi
+ *   php bin/snippet_maintenance.php --links        anteprime dei link in attesa
  *
- * Le prime due recuperano cio' che il bot non ha potuto fare sul momento
- * (servizio ML spento, rete assente); la terza rende simmetrico il grafo e
- * ricalcola i pesi sul diario aggiornato. Legge config.php con la stessa
- * logica della webapp.
+ * Trascrizioni e anteprime recuperano cio' che il bot non ha potuto fare sul
+ * momento (servizio ML spento, rete assente); la ricostruzione rende
+ * simmetrico il grafo e ricalcola i pesi sul diario aggiornato. Legge
+ * config.php con la stessa logica della webapp.
  */
 
 define('SNIPPET_NO_SESSION', true);
@@ -72,12 +72,6 @@ if ($all || isset($opts['transcribe'])) {
   printf("[%s] vocali: %d trascritti, %d non riusciti%s\n", $ts(), $done, $fail, ml_enabled() ? '' : ' (servizio ML non configurato)');
 }
 
-/* --- anteprime dei link ancora da scaricare --- */
-if ($all || isset($opts['links'])) {
-  $res = links_fetch_pending($db, null, 100);
-  printf("[%s] anteprime: %d scaricate, %d non raggiungibili\n", $ts(), $res['ok'], $res['error']);
-}
-
 /* --- ricostruzione integrale (con i vettori semantici mancanti) --- */
 if ($all || isset($opts['graph'])) {
   $res = graph_rebuild($db);
@@ -86,4 +80,13 @@ if ($all || isset($opts['graph'])) {
     $ts(), $res['entries'], $res['edges'], $res['clusters'],
     $res['vectors'] < 0 ? 'servizio ML non disponibile' : (string)$res['vectors'], $res['seconds']
   );
+}
+
+/* --- anteprime dei link ancora da scaricare ---
+   DOPO la ricostruzione: e' lei a registrare gli URL delle voci (anche di
+   quelle arrivate senza passare dal bot), quindi cosi' nessun link resta
+   in attesa fino alla notte successiva (difetto visto il 08/10/2026). */
+if ($all || isset($opts['links'])) {
+  $res = links_fetch_pending($db, null, 100);
+  printf("[%s] anteprime: %d scaricate, %d non raggiungibili\n", $ts(), $res['ok'], $res['error']);
 }

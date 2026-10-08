@@ -597,7 +597,8 @@ try {
 
   case 'links_fetch': {
     $id = isset($in['ref']) ? b_resolve($db, $in['ref']) : null;
-    api_json(['ok' => true] + links_fetch_pending($db, $id));
+    $res = links_fetch_pending($db, $id);
+    api_json(['ok' => true, 'fetched' => $res['ok'], 'failed' => $res['error']]);
   }
 
   /* ------------------- ricordi, digest, promemoria ------------------- */

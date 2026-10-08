@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-10-08 (sera) — Trascrizione con Whisper small, correzioni
+
+- **Whisper small predefinito** (`ml/deploy/install-ml.sh`, `ml/.env.example`,
+  `ml/snippet_ml.py`): misurato sullo stesso server e nelle stesse condizioni
+  (4 thread, priorità minima), 44 s di audio in 37 s contro 124 s del modello
+  turbo; 11 s in 14 s contro 69 s. Il turbo resta selezionabile
+  (`WHISPER_MODEL=ggml-large-v3-turbo-q5_0.bin`), più preciso sui nomi propri.
+  `install-ml.sh` aggiorna il modello anche in un `.env` già esistente.
+  Con 8 thread su 4 core carichi la trascrizione è 3 volte più lenta: il
+  default resta 4.
+- **`bin/snippet_maintenance.php`**: le anteprime dei link si scaricano dopo
+  la ricostruzione, che registra gli URL; prima un link poteva restare in
+  attesa fino alla notte successiva.
+- **`webapp/api/bot.php`** (`links_fetch`): conteggi restituiti come
+  `fetched`/`failed`; il campo `ok` dell'esito sovrascriveva il conteggio.
+- `README.md`: sezione del servizio ML con le misure.
+
 ## 2026-10-08 — Roadmap: analisi del testo, bot proattivo, web completo
 
 Revisione dell'intero progetto basata sull'uso reale (15 voci, tutte da

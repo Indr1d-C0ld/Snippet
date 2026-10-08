@@ -110,9 +110,11 @@ sudo bash ml/deploy/install-ml.sh      # scarica pacchetti e modelli, compila wh
 # poi in config.php:  'ml_url' => 'http://127.0.0.1:8765', 'ml_token' => '<ML_TOKEN di /opt/snippet-ml/.env>'
 ```
 
-Modelli: multilingual-e5-small ONNX quantizzato (≈135 MB) e un modello Whisper
-(`ml/.env.example` confronta turbo / small / base). Su CPU modeste il modello
-turbo è lento: la trascrizione gira comunque in background e a bassa priorità.
+Modelli: multilingual-e5-small ONNX quantizzato (≈135 MB) e Whisper **small**
+(488 MB, predefinito: su un i7-4770TE carico trascrive 44 s di audio in 37 s).
+Il turbo (`WHISPER_MODEL=ggml-large-v3-turbo-q5_0.bin`) è più preciso sui nomi
+ma 3–5 volte più lento; `ml/.env.example` riporta le misure. La trascrizione
+gira comunque in background e a bassa priorità.
 
 ### Bot Telegram
 

@@ -11,14 +11,14 @@
 #   VENV_FROM=/percorso/venv         virtualenv con onnxruntime/numpy/tokenizers
 #   MODELS_FROM=/percorso/models     contiene e5-small/ e ggml-*.bin
 #   WHISPER_FROM=/percorso/whisper-cli   binario gia' compilato (statico)
-#   WHISPER_MODEL=ggml-large-v3-turbo-q5_0.bin   (default)
+#   WHISPER_MODEL=ggml-small.bin   (default; ggml-large-v3-turbo-q5_0.bin = piu' preciso, ~4x piu' lento)
 # =============================================================================
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"          # .../ml
 OPT="/opt/snippet-ml"
 SVCUSER="snippet-ml"
-WHISPER_MODEL="${WHISPER_MODEL:-ggml-large-v3-turbo-q5_0.bin}"
+WHISPER_MODEL="${WHISPER_MODEL:-ggml-small.bin}"
 WHISPER_TAG="${WHISPER_TAG:-v1.9.5}"
 
 [ "$(id -u)" -eq 0 ] || { echo "Esegui con sudo."; exit 1; }
@@ -37,7 +37,13 @@ if [ ! -f "$OPT/.env" ]; then
       "$SRC/.env.example" > "$OPT/.env"
   echo "   creato $OPT/.env (token generato)"
 else
-  echo "   $OPT/.env gia' presente: lasciato invariato"
+  # .env esistente: si aggiorna solo il modello di trascrizione, se e' cambiato
+  if ! grep -q "^ML_WHISPER_MODEL=$OPT/models/$WHISPER_MODEL\$" "$OPT/.env"; then
+    sed -i "s#^ML_WHISPER_MODEL=.*#ML_WHISPER_MODEL=$OPT/models/$WHISPER_MODEL#" "$OPT/.env"
+    echo "   $OPT/.env: modello di trascrizione -> $WHISPER_MODEL"
+  else
+    echo "   $OPT/.env gia' presente: lasciato invariato"
+  fi
 fi
 chown "$SVCUSER:$SVCUSER" "$OPT/.env"; chmod 0600 "$OPT/.env"
 
